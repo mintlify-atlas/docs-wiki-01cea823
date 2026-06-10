@@ -59,7 +59,7 @@ Fineract's revenue and cost model is built on three composable layers: **Charges
 | `feeOnMonth` | `fee_on_month` | `INTEGER` | Month portion |
 | `feeInterval` | `fee_interval` | `INTEGER` | Repeat interval (months for monthly fee) |
 | `feeFrequency` | `fee_frequency` | `INTEGER` | `PeriodFrequencyType` ordinal |
-| `minCap` | `min_cap` | `DECIMAL(19,6)` | Minimum amount cap; only for `PERCENT_OF_AMOUNT` |
+| `minCap` | `min_cap` | `DECIMAL(19,6)` | Minimum amount cap; applies to `PERCENT_OF_AMOUNT` and `PERCENT_OF_DISBURSEMENT_AMOUNT` |
 | `maxCap` | `max_cap` | `DECIMAL(19,6)` | Maximum amount cap |
 | `enableFreeWithdrawal` | `is_free_withdrawal` | `BOOLEAN` | Savings free-withdrawal feature |
 | `freeWithdrawalFrequency` | `free_withdrawal_charge_frequency` | `INTEGER` | Count of free withdrawals before fee kicks in |
@@ -129,7 +129,7 @@ Fineract's revenue and cost model is built on three composable layers: **Charges
 |----------|-------|-------------|-----------|
 | `INVALID` | 0 | — | — |
 | `FLAT` | 1 | Fixed absolute amount | All |
-| `PERCENT_OF_AMOUNT` | 2 | % of outstanding principal | Loan, Savings, Shares, Client |
+| `PERCENT_OF_AMOUNT` | 2 | % of outstanding principal | Loan, Savings, Shares |
 | `PERCENT_OF_AMOUNT_AND_INTEREST` | 3 | % of (principal + interest) | Loan only |
 | `PERCENT_OF_INTEREST` | 4 | % of interest portion | Loan only |
 | `PERCENT_OF_DISBURSEMENT_AMOUNT` | 5 | % of disbursed amount | Loan (`TRANCHE_DISBURSEMENT`) |

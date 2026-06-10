@@ -328,7 +328,7 @@ The pre-existing command system (still used by all domain handlers in `fineract-
 | `CommandProcessingResultType` | `commands/domain/CommandProcessingResultType.java` | Enum of result types (see below) |
 | `PortfolioCommandSourceWritePlatformService` | `commands/service/` | Interface for submitting commands |
 | `PortfolioCommandSourceWritePlatformServiceImpl` | `commands/service/PortfolioCommandSourceWritePlatformServiceImpl.java` | Resolves handler, executes, persists |
-| `CommandProcessingService` | `commands/service/CommandProcessingService.java` | `processAndLogCommand(…)` |
+| `CommandProcessingService` | `commands/service/CommandProcessingService.java` | `executeCommand(…)` |
 | `NewCommandSourceHandler` | `commands/handler/NewCommandSourceHandler.java` | Interface for domain handlers |
 
 ### `CommandProcessingResultType` values
@@ -356,8 +356,9 @@ sequenceDiagram
     Client->>Resource: POST /api/v1/loans/{id}?command=approve
     Resource->>PCW: logCommandSource(wrapper)
     PCW->>PCW: Check maker-checker config
-    PCW->>CPS: processAndLogCommand(wrapper, json)
-    CPS->>Handler: processWithCheckerRejectionRequest(command)
+    PCW->>CPS: executeCommand(wrapper, command, isApprovedByChecker)
+    CPS->>CPS: findCommandHandler(wrapper) → bean lookup
+    CPS->>Handler: processCommand(command)
     Handler->>Handler: Business logic (domain change)
     Handler-->>CPS: CommandProcessingResult
     CPS->>DB: INSERT INTO m_portfolio_command_source

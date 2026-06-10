@@ -16,8 +16,8 @@ Apache Fineract ships a rich set of container orchestration files in the project
 
 | File | Purpose |
 |---|---|
-| `docker-compose.yml` | Default stack: PostgreSQL + Fineract (ports `8443`, `5000`) |
-| `docker-compose-postgresql.yml` | PostgreSQL variant with explicit version pin |
+| `docker-compose.yml` | Default stack: PostgreSQL + Fineract (HTTPS port `8443`, JDWP debug port `5000`) |
+| `docker-compose-postgresql.yml` | PostgreSQL variant — same as default but uses `version: "3.8"` compose format and exposes only port `8443` (no debug port) |
 | `docker-compose-mysql.yml` | MySQL 8 standalone database (port `3306`); no Fineract service |
 | `docker-compose-mariadb.yml` | MariaDB standalone database |
 | `docker-compose-postgresql-kafka.yml` | Multi-node: Kafka + PostgreSQL + `fineract-manager` + 2× `fineract-worker` replicas |
@@ -73,7 +73,7 @@ This file defines a 4-container topology for testing horizontal scaling with Kaf
 
 ```mermaid
 graph LR
-    kafka["kafka<br/>(apache/kafka:4.2.0)"]
+    kafka["kafka<br/>(apache/kafka:4.2.0-rc2)"]
     db["db<br/>(PostgreSQL)"]
     mgr["fineract-manager<br/>(port 8443)"]
     w1["fineract-worker 1<br/>(port 8444)"]
@@ -203,7 +203,7 @@ All Kubernetes manifests live in `kubernetes/`:
 | File | Kind(s) | Description |
 |---|---|---|
 | `fineract-server-deployment.yml` | `Service` + `Deployment` | Fineract server: LoadBalancer on port 8443, `apache/fineract:latest` |
-| `fineractmysql-deployment.yml` | `PersistentVolume` + `PersistentVolumeClaim` + `Service` + `Deployment` | MariaDB 12.2 with 10Gi PV, headless ClusterIP service |
+| `fineractmysql-deployment.yml` | `PersistentVolume` + `PersistentVolumeClaim` + `Service` + `Deployment` | MariaDB 12.2 with 10Gi PV (5Gi claim), headless ClusterIP service (`clusterIP: None`) |
 | `fineractmysql-configmap.yml` | `ConfigMap` | Init SQL: creates `fineract_tenants` and `fineract_default` databases |
 | `fineract-mifoscommunity-deployment.yml` | `ConfigMap` + `Service` + `Deployment` | Mifos Community web app (nginx) with LoadBalancer on port 9090 |
 | `kubectl-startup.sh` | Script | `kubectl apply` sequence |
@@ -214,7 +214,7 @@ All Kubernetes manifests live in `kubernetes/`:
 | Variable | Source | Value |
 |---|---|---|
 | `FINERACT_NODE_ID` | literal | `1` |
-| `FINERACT_HIKARI_DRIVER_CLASS_NAME` | literal | `org.mariadb.jdbc.Driver` |
+| `FINERACT_HIKARI_DRIVER_CLASS_NAME` | literal | `org.mariadb.jdbc.Driver` _(note: the K8s manifest uses this name; `application.properties` maps the same pool via `FINERACT_HIKARI_DRIVER_SOURCE_CLASS_NAME`)_ |
 | `FINERACT_HIKARI_JDBC_URL` | literal | `jdbc:mariadb://fineractmysql:3306/fineract_tenants` |
 | `FINERACT_HIKARI_USERNAME` | `secretKeyRef: fineract-tenants-db-secret/username` | from K8s Secret |
 | `FINERACT_HIKARI_PASSWORD` | `secretKeyRef: fineract-tenants-db-secret/password` | from K8s Secret |
@@ -222,10 +222,22 @@ All Kubernetes manifests live in `kubernetes/`:
 | `FINERACT_DEFAULT_TENANTDB_PORT` | literal | `3306` |
 | `FINERACT_DEFAULT_TENANTDB_UID` | `secretKeyRef: fineract-tenants-db-secret/username` | from K8s Secret |
 | `FINERACT_DEFAULT_TENANTDB_PWD` | `secretKeyRef: fineract-tenants-db-secret/password` | from K8s Secret |
+| `FINERACT_DEFAULT_TENANTDB_CONN_PARAMS` | literal | `''` (empty) |
 | `FINERACT_SERVER_PORT` | literal | `8443` |
 | `JAVA_TOOL_OPTIONS` | literal | `-Xmx1G -XX:MaxMetaspaceSize=256m` |
 
 Resource limits: `cpu: 1000m / memory: 2Gi`. Resource requests: `cpu: 200m / memory: 1Gi`.
+
+### `fineractmysql-deployment.yml` — MariaDB Resource Specs
+
+The MariaDB container in the K8s manifest runs `mariadb:12.2` with the `--innodb-snapshot-isolation=OFF` argument and the following resource allocation:
+
+| | CPU | Memory |
+|---|---|---|
+| **Requests** | `1000m` | `1Gi` |
+| **Limits** | `2000m` | `5Gi` |
+
+The MariaDB liveness and readiness probes both execute `mariadb -uroot -p${MARIADB_ROOT_PASSWORD} -e 'SELECT 1'` with a `failureThreshold` of `10` and a `timeoutSeconds` of `10`. The database password is supplied from the same `fineract-tenants-db-secret` Kubernetes Secret as the Fineract server.
 
 ### Liveness & Readiness Probes
 

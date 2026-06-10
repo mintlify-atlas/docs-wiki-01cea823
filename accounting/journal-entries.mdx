@@ -161,7 +161,7 @@ sequenceDiagram
     Bridge->>Helper: createJournalEntriesForLoan(LoanDTO)
     Helper->>Factory: determineProcessor(LoanDTO)
     Factory-->>Proc: cashBasedAccountingProcessorForLoan\n OR accrualBasedAccountingProcessorForLoan
-    Proc->>Helper: helper.createDebitJournalEntryOrReversalForLoan(...)
+    Proc->>Helper: helper.createDebitJournalEntryForLoan(...)
     Helper->>Repo: glJournalEntryRepository.saveAndFlush(JournalEntry)
     Helper->>Repo: glJournalEntryRepository.saveAndFlush(JournalEntry)
     Note over Repo: Balanced pair: one DEBIT + one CREDIT
@@ -187,12 +187,15 @@ Handles these `LoanTransactionEnumData` transaction type checks in order:
 
 | Transaction Type Check | Method Called |
 |---|---|
+| `isReversed()` | `journalEntryWritePlatformService.createJournalEntryForReversedLoanTransaction()` — checked **first**; skips remaining checks via `continue` |
 | `isDisbursement()` | `createJournalEntriesForDisbursements()` |
 | `isRepaymentType() && !isChargeAdjustment()`, `isRepaymentAtDisbursement()`, `isChargePayment()` | `createJournalEntriesForRepayments()` |
 | `isRecoveryRepayment()` | `createJournalEntriesForRecoveryRepayments()` |
 | `isRefund()` | `createJournalEntriesForRefund()` |
 | `isCreditBalanceRefund()` | `createJournalEntriesForCreditBalanceRefund()` |
-| `isReversed()` | `journalEntryWritePlatformService.createJournalEntryForReversedLoanTransaction()` |
+| `isWriteOff()` | Inline: DEBIT `LOSSES_WRITTEN_OFF`, CREDIT `LOAN_PORTFOLIO` (principal only) |
+| `isChargeAdjustment()` | `createJournalEntriesForChargeAdjustment()` |
+| `isChargeoff()` | `createJournalEntriesForChargeOff()` |
 
 For a **cash-based disbursement**, the pattern is:
 - **DEBIT** `LOAN_PORTFOLIO` (the loan receivable account)
@@ -235,12 +238,13 @@ When the repayment later clears the accrual:
 | Method | Purpose |
 |---|---|
 | `populateLoanDtoFromDTO(AccountingBridgeDataDTO)` | Converts bridge data to internal `LoanDTO` with `LoanTransactionDTO` list |
-| `createDebitJournalEntryOrReversalForLoan(...)` | Creates a DEBIT `JournalEntry` or marks existing one reversed |
-| `createCreditJournalEntryOrReversalForLoan(...)` | Creates a CREDIT `JournalEntry` or marks existing one reversed |
-| `getOfficeById(Long officeId)` | Cached office lookup (used in loop bodies) |
-| `getLatestClosureByBranch(Long officeId)` | Returns `GLClosure` if the branch has a period closure; used by `checkForBranchClosures()` |
+| `createDebitJournalEntryForLoan(...)` | Creates a DEBIT `JournalEntry` for a loan transaction |
+| `createCreditJournalEntryForLoan(...)` | Creates a CREDIT `JournalEntry` for a loan transaction |
+| `createJournalEntriesForLoan(...)` | Creates a balanced debit+credit pair in a single call |
+| `getOfficeById(long officeId)` | Office lookup by ID (used in the per-transaction loop) |
+| `getLatestClosureByBranch(long officeId)` | Returns `GLClosure` if the branch has a period closure; used by `checkForBranchClosures()` |
 | `checkForBranchClosures(GLClosure, LocalDate)` | Throws `JournalEntryInvalidException` if `transactionDate <= closureDate` |
-| `getGLAccountById(...)` | Looks up GL account from `ProductToGLAccountMappingRepository` by `(productId, productType, financialAccountType, paymentTypeId)` |
+| `getLinkedGLAccountForLoanProduct(Long loanProductId, int accountMappingTypeId, Long paymentTypeId)` | Looks up GL account from `ProductToGLAccountMappingRepository` by product, mapping type, and optional payment type |
 
 ---
 

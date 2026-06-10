@@ -177,7 +177,7 @@ Business dates are loaded once per thread at filter time. If you spawn a new thr
 **File:** `infrastructure/cache/domain/PlatformCache.java` — mapped to table `c_cache`. Stores the active cache type per tenant.
 
 ### `CacheType` enum
-**File:** `infrastructure/cache/domain/CacheType.java` — values: `NO_CACHE`, `SINGLE_NODE`, `MULTI_NODE`.
+**File:** `infrastructure/cache/domain/CacheType.java` — values: `INVALID`, `NO_CACHE`, `SINGLE_NODE`, `MULTI_NODE`.
 
 ### `RuntimeDelegatingCacheManager`
 **File:** `infrastructure/cache/service/RuntimeDelegatingCacheManager.java` — Spring `CacheManager` implementation that delegates to the cache implementation selected at runtime (none / Ehcache single-node / Hazelcast multi-node). Switches dynamically via `CacheWritePlatformService.switchToCache`.

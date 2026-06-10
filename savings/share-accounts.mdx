@@ -165,9 +165,8 @@ This enum covers **both** the status **and** the type of a `ShareAccountTransact
 | Value | Constant | Description |
 |-------|---------|-------------|
 | `0` | `INVALID` | Sentinel |
-| `100` | `INITIATED` | Dividend created, not posted |
-| `200` | `POSTED` | Dividend posted to savings |
-| `300` | `REJECTED` | Dividend rejected |
+| `100` | `INITIATED` | Dividend created, not yet posted |
+| `300` | `POSTED` | Dividend posted to savings account |
 
 ### ShareProductDividendStatusType
 `fineract-provider/…/shareproducts/domain/ShareProductDividendStatusType.java`
@@ -175,9 +174,8 @@ This enum covers **both** the status **and** the type of a `ShareAccountTransact
 | Value | Constant | Description |
 |-------|---------|-------------|
 | `0` | `INVALID` | Sentinel |
-| `100` | `INITIATED` | Payout record created |
-| `200` | `POSTED` | All account dividends posted |
-| `300` | `REJECTED` | Dividend rejected |
+| `100` | `INITIATED` | Payout record created, awaiting approval |
+| `300` | `APPROVED` | Dividend payout approved for posting |
 
 ---
 
@@ -292,25 +290,25 @@ Dividends flow from a share product-level declaration down to individual savings
 sequenceDiagram
     participant Admin
     participant API as ShareDividendApiResource
-    participant ProductSvc as ShareProductCommandsServiceImpl
+    participant ProductSvc as ShareProductWritePlatformService
     participant DB as ShareProductDividendPayOutDetails
     participant Job as PostDividentsForSharesTasklet
     participant AcctSvc as ShareAccountSchedularServiceImpl
     participant SavingsSvc as SavingsAccountWritePlatformService
 
     Admin->>API: POST /shareproduct/{id}/dividend\n{dividendPeriodStartDate, dividendPeriodEndDate, dividendAmount}
-    API->>ProductSvc: createDividendDetail
-    ProductSvc->>DB: persist ShareProductDividendPayOutDetails\nstatus=INITIATED
+    API->>ProductSvc: createShareProductDividend
+    ProductSvc->>DB: persist ShareProductDividendPayOutDetails\nstatus=INITIATED\ncreate ShareAccountDividendDetails per account\n(each with status=INITIATED)
 
     Admin->>API: PUT /shareproduct/{id}/dividend/{did}?command=approve
-    API->>ProductSvc: approveDividendDetail
-    ProductSvc->>DB: status=POSTED\ncreate ShareAccountDividendDetails per account
+    API->>ProductSvc: approveShareProductDividend
+    ProductSvc->>DB: approveDividendPayout()\nstatus=APPROVED (300)
 
     Note over Job: Nightly scheduled job
     Job->>Job: ShareAccountDividendReadPlatformService\n.retriveDividendDetailsForPostDividents()
     Job->>AcctSvc: postDividend(dividendDetailId, savingsId)
     AcctSvc->>SavingsSvc: deposit(savingsId, JsonCommand)\ntype=DIVIDEND_PAYOUT
-    AcctSvc->>DB: mark ShareAccountDividendDetails\nstatus=POSTED
+    AcctSvc->>DB: mark ShareAccountDividendDetails\nstatus=POSTED (300)
 ```
 
 ### Job: Post Dividends for Shares
@@ -318,23 +316,23 @@ sequenceDiagram
 **Tasklet:** `PostDividentsForSharesTasklet`  
 `fineract-provider/…/shareaccounts/jobs/postdividentsforshares/PostDividentsForSharesTasklet.java`
 
-The tasklet calls `ShareAccountDividendReadPlatformService.retriveDividendDetailsForPostDividents()` which returns rows from `m_share_account_dividend_details` where `status = INITIATED`. For each row it calls `ShareAccountSchedularService.postDividend(dividendDetailId, savingsId)`, which deposits the dividend amount into the linked savings account as a `DIVIDEND_PAYOUT` (`SavingsAccountTransactionType.DIVIDEND_PAYOUT`, id `8`).
+The tasklet calls `ShareAccountDividendReadPlatformService.retriveDividendDetailsForPostDividents()` which returns rows from `m_share_account_dividend_details` where `status = INITIATED` (100). For each row it calls `ShareAccountSchedularService.postDividend(dividendDetailId, savingsId)`, which deposits the dividend amount into the linked savings account as a `DIVIDEND_PAYOUT` (`SavingsAccountTransactionType.DIVIDEND_PAYOUT`, id `8`) and then marks the `ShareAccountDividendDetails` row as `POSTED` (300).
 
 The link between a share account and its savings account is `ShareAccount.savingsAccount` (FK `savings_account_id`). Only `ACTIVE` share accounts with `allowDividendCalculationForInactiveClients` or an active client receive payouts.
 
 ### ShareProductDividendPayOutDetails
 
 `fineract-provider/…/shareproducts/domain/ShareProductDividendPayOutDetails.java`  
-Table: `m_share_product_dividend_pay_out_details`
+Table: `m_share_product_dividend_pay_out`
 
-Key fields: `shareProductId`, `dividendPeriodStartDate`, `dividendPeriodEndDate`, `dividendAmount`, `status` (`ShareProductDividendStatusType`).
+Key fields: `shareProductId`, `dividendPeriodStartDate`, `dividendPeriodEndDate`, `amount`, `status` (`ShareProductDividendStatusType`).
 
 ### ShareAccountDividendDetails
 
 `fineract-provider/…/shareaccounts/domain/ShareAccountDividendDetails.java`  
 Table: `m_share_account_dividend_details`
 
-Key fields: `shareAccountId`, `savingsAccountId`, `dividendPayOutDetailsId`, `amount`, `status` (`ShareAccountDividendStatusType`).
+Key fields: `shareAccountId` (column `account_id`), `savingsTransactionId`, `dividendPayOutDetailsId` (FK `dividend_pay_out_id`), `amount`, `status` (`ShareAccountDividendStatusType`).
 
 ---
 
@@ -431,7 +429,7 @@ The generic REST dispatcher at `AccountsApiResource` uses Spring's `ApplicationC
 </Tip>
 
 <Note>
-Dividend approval (`PUT /shareproduct/{productId}/dividend/{dividendId}?command=approve`) is separate from actual posting. Approval creates the `m_share_account_dividend_details` rows with `status=INITIATED`. The nightly job `PostDividentsForSharesTasklet` then picks these up and posts them. If the job fails mid-run, partially-posted dividends leave some rows at `INITIATED` — re-running the job is safe as it only processes `INITIATED` rows.
+Dividend approval (`PUT /shareproduct/{productId}/dividend/{dividendId}?command=approve`) sets `ShareProductDividendPayOutDetails.status` to `APPROVED` (300) via `approveDividendPayout()`. The `m_share_account_dividend_details` rows created at dividend creation already carry `status=INITIATED` (100). The nightly job `PostDividentsForSharesTasklet` picks up `INITIATED` rows and marks them `POSTED` (300) after crediting the savings account. Re-running the job is safe as it only processes `INITIATED` rows.
 </Note>
 
 <Info>

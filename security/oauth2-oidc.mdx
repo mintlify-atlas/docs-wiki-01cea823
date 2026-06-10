@@ -229,12 +229,17 @@ Built `AuthenticationManager` instances are cached in `ConcurrentHashMap<String,
 ### `OidcTenantAwareFilter`
 **File:** `fineract-security/src/main/java/org/apache/fineract/infrastructure/security/filter/OidcTenantAwareFilter.java`
 
-Added **before** `SecurityContextHolderFilter` in `OidcFederationSecurityConfig`. Resolves tenant using this priority:
-1. Configurable JWT claim (`fineract.security.oidc-federation.tenant-claim-name`, default `fineract_tenant`) — parsed from Bearer token without signature verification.
-2. `Fineract-Platform-TenantId` HTTP header.
-3. `tenantIdentifier` query parameter.
+Extends `OncePerRequestFilter`. Registered before `SecurityContextHolderFilter` in `OidcFederationSecurityConfig`. The filter parses the Bearer JWT (without signature verification) to find a tenant and then calls `ThreadLocalContextUtil.setTenant()`. Always calls `ThreadLocalContextUtil.reset()` in a `finally` block.
 
-Sets the resolved tenant into `ThreadLocalContextUtil.setTenant()`. If resolution fails, the filter logs a warning and continues — downstream authentication will fail if tenant context is required.
+Full tenant resolution priority (from the `resolveTenantId` method):
+
+1. **JWT `iss` → master DB (`m_tenant_oidc_config`)**: extracts the `iss` claim from the Bearer JWT and calls `TenantOidcConfigService.findByIssuerUri(iss)` — returns `config.getTenantId()` if a matching record is found.
+2. **JWT `iss` → YAML `issuers[]`**: if not found in DB, scans `fineractProperties.getSecurity().getOidcFederation().getIssuers()` for a matching `issuerUri` and returns its `tenantId`.
+3. **Configurable JWT claim** (`fineract.security.oidc-federation.tenant-claim-name`, default `fineract_tenant`): reads the named claim directly from the JWT payload.
+4. **`Fineract-Platform-TenantId` HTTP header**.
+5. **`tenantIdentifier` query parameter**.
+
+The filter is skipped for `/swagger-ui`, `/actuator`, `/login`, and `/error` paths. If resolution fails for any reason, the filter logs a warning and calls `chain.doFilter()` — downstream authentication will fail with an appropriate error if tenant context is required.
 
 ---
 
@@ -308,7 +313,16 @@ sequenceDiagram
 
     Client->>OidcTenantAwareFilter: HTTP Request (Authorization: Bearer <jwt>)
     OidcTenantAwareFilter->>OidcTenantAwareFilter: Parse JWT iss claim (no sig check)
-    OidcTenantAwareFilter->>OidcTenantAwareFilter: Extract tenant from claim / header / param
+    OidcTenantAwareFilter->>TenantOidcConfigService: findByIssuerUri(iss) — Priority 1
+    alt iss matches DB record
+        TenantOidcConfigService-->>OidcTenantAwareFilter: tenantId from m_tenant_oidc_config
+    else iss matches YAML issuers[]
+        OidcTenantAwareFilter->>OidcTenantAwareFilter: tenantId from YAML config — Priority 2
+    else fineract_tenant claim present
+        OidcTenantAwareFilter->>OidcTenantAwareFilter: tenantId from JWT claim — Priority 3
+    else header / query param
+        OidcTenantAwareFilter->>OidcTenantAwareFilter: tenantId from header/param — Priority 4/5
+    end
     OidcTenantAwareFilter->>ThreadLocalContextUtil: setTenant(tenantDetails)
 
     Note over Client,AppUserRepository: Spring Security OAuth2 Resource Server processing
@@ -392,7 +406,7 @@ Do not enable both `fineract.security.basicauth.enabled=true` and `fineract.secu
 </Accordion>
 
 <Accordion title="Tenant resolution in OIDC mode">
-`OidcTenantAwareFilter` runs before Spring Security validates the JWT signature. It parses the JWT without signature verification to extract the `fineract_tenant` claim (or uses header/query param). If the claim is absent and no header/param is provided, tenant context is not set. The subsequent JWT validation will succeed (if the signature is valid) but domain service calls may fail because `ThreadLocalContextUtil` has no tenant.
+`OidcTenantAwareFilter` runs before Spring Security validates the JWT signature. Its primary resolution strategy is to match the JWT `iss` claim against `m_tenant_oidc_config` (DB first, then YAML `issuers[]`). Only if `iss`-based lookup fails does it fall back to the configurable `fineract_tenant` claim, then `Fineract-Platform-TenantId` header, then `tenantIdentifier` query parameter. If all five strategies fail, tenant context is not set, and subsequent domain service calls will fail because `ThreadLocalContextUtil` has no tenant — even if JWT signature validation succeeds.
 </Accordion>
 
 <Accordion title="auto-create-user and default-roles">

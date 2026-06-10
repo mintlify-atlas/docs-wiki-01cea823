@@ -165,15 +165,15 @@ All concrete processors extend `AbstractLoanRepaymentScheduleTransactionProcesso
 
 | Processor Class | Strategy Code | Allocation Order |
 |---|---|---|
-| `FineractStyleLoanRepaymentScheduleTransactionProcessor` | `mifos-standard` | Due penalty → fee → interest → principal; then future installments same order |
-| `HeavensFamilyLoanRepaymentScheduleTransactionProcessor` | `heavensfamily` | Due interest → principal → penalty → fee |
-| `CreocoreLoanRepaymentScheduleTransactionProcessor` | `creocore` | Due fee → penalty → interest → principal |
-| `RBILoanRepaymentScheduleTransactionProcessor` | `rbi-india` | RBI (India) regulatory order |
-| `InterestPrincipalPenaltyFeesOrderLoanRepaymentScheduleTransactionProcessor` | `interest-principal-penalties-fees` | Interest → principal → penalty → fee |
-| `PrincipalInterestPenaltyFeesOrderLoanRepaymentScheduleTransactionProcessor` | `principal-interest-penalties-fees` | Principal → interest → penalty → fee |
-| `EarlyPaymentLoanRepaymentScheduleTransactionProcessor` | `early-repayment` | Allocate to furthest-future installments first |
-| `DuePenFeeIntPriInAdvancePriPenFeeIntLoanRepaymentScheduleTransactionProcessor` | `due-penalty-fee-interest-principal-in-advance-principal-penalty-fee-interest-progressive` | Due (penalty→fee→interest→principal) then advance (principal→penalty→fee→interest) |
-| `DuePenIntPriFeeInAdvancePenIntPriFeeLoanRepaymentScheduleTransactionProcessor` | `due-penalty-interest-principal-fee-in-advance-penalty-interest-principal-fee-progressive` | Variant with interest before fee |
+| `FineractStyleLoanRepaymentScheduleTransactionProcessor` | `mifos-standard-strategy` | Due penalty → fee → interest → principal; then future installments same order |
+| `HeavensFamilyLoanRepaymentScheduleTransactionProcessor` | `heavensfamily-strategy` | Due interest → principal → penalty → fee |
+| `CreocoreLoanRepaymentScheduleTransactionProcessor` | `creocore-strategy` | Due fee → penalty → interest → principal |
+| `RBILoanRepaymentScheduleTransactionProcessor` | `rbi-india-strategy` | RBI (India) regulatory order |
+| `InterestPrincipalPenaltyFeesOrderLoanRepaymentScheduleTransactionProcessor` | `interest-principal-penalties-fees-order-strategy` | Interest → principal → penalty → fee |
+| `PrincipalInterestPenaltyFeesOrderLoanRepaymentScheduleTransactionProcessor` | `principal-interest-penalties-fees-order-strategy` | Principal → interest → penalty → fee |
+| `EarlyPaymentLoanRepaymentScheduleTransactionProcessor` | `early-repayment-strategy` | Allocate to furthest-future installments first |
+| `DuePenFeeIntPriInAdvancePriPenFeeIntLoanRepaymentScheduleTransactionProcessor` | `due-penalty-fee-interest-principal-in-advance-principal-penalty-fee-interest-strategy` | Due (penalty→fee→interest→principal) then advance (principal→penalty→fee→interest) |
+| `DuePenIntPriFeeInAdvancePenIntPriFeeLoanRepaymentScheduleTransactionProcessor` | `due-penalty-interest-principal-fee-in-advance-penalty-interest-principal-fee-strategy` | Variant with interest before fee |
 
 ---
 

@@ -88,8 +88,9 @@ public class ScheduledJobDetail extends AbstractPersistableCustom<Long> {
 ScheduledJobDetail findByJobKey(String jobKey);
 ScheduledJobDetail findByJobKeyWithLock(String jobKey); // PESSIMISTIC_WRITE
 List<ScheduledJobDetail> findAllJobs(Integer nodeId);   // nodeId OR 0
-JobDetailData getDataById(Long jobId);    // JPQL projection including last run history
-JobDetailData getAllData();               // all jobs with last run history (left join)
+JobDetailData getDataById(Long jobId);           // JPQL projection including last run history
+JobDetailData getDataByShortName(String shortName); // same projection, keyed by shortName
+List<JobDetailData> getAllData();                 // all jobs with last run history (left join)
 Optional<Long> findIdByShortName(String shortName);
 ```
 

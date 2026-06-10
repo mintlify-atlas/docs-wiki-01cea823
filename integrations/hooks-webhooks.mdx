@@ -236,6 +236,9 @@ public interface WebHookService {
     @FormUrlEncoded @POST(".")
     Call<Void> sendFormRequest(..., @FieldMap Map<String, String> params);
     @POST(".") Call<Void> sendSmsBridgeRequest(
+        @Header("X-Fineract-Entity") String entityHeader,
+        @Header("X-Fineract-Action") String actionHeader,
+        @Header("Fineract-Platform-TenantId") String tenantHeader,
         @Header("X-Fineract-API-Key") String apiKeyHeader, @Body JsonObject result);
     @POST("/configuration") Call<String> sendSmsBridgeConfigRequest(@Body HookSmsProviderData config);
 }
@@ -265,16 +268,14 @@ Active for template `"Elastic Search"`. Forwards event payload to an Elasticsear
 
 File: `fineract-provider/.../hooks/processor/HookProcessorProvider.java`
 
-Resolves processor bean by `hook.getTemplate().getName()`:
+Resolves processor bean by `hook.getTemplate().getName()` using `if/else-if` branches. Note: the `"SMS Bridge"` comparison uses `equalsIgnoreCase`; all others use `equals` (case-sensitive):
 
 ```java
-switch (templateName) {
-    case "SMS Bridge"       → TwilioHookProcessor
-    case "Web"              → WebHookProcessor
-    case "Elastic Search"   → ElasticSearchHookProcessor
-    case "Message Gateway"  → MessageGatewayHookProcessor
-    default                 → null  // NPE will occur — must be a known template
-}
+if (templateName.equalsIgnoreCase("SMS Bridge"))   → TwilioHookProcessor
+else if (templateName.equals("Web"))               → WebHookProcessor
+else if (templateName.equals("Elastic Search"))    → ElasticSearchHookProcessor
+else if (templateName.equals("Message Gateway"))   → MessageGatewayHookProcessor
+else                                               → null  // NPE will occur — must be a known template
 ```
 
 <Warning>

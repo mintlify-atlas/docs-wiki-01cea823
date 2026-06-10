@@ -30,7 +30,7 @@ graph TB
         CWB["CommandWrapperBuilder"]
         PCSWPS["PortfolioCommandSourceWritePlatformService\n.logCommandSource()"]
         SCPS["SynchronousCommandProcessingService\n.executeCommand()"]
-        CHP["CommandHandlerProvider\nlookup by @CommandType(action,entity)"]
+        CHP["CommandHandlerProvider\nlookup by @CommandType(entity,action)"]
         NCSH["NewCommandSourceHandler\n.processCommand()"]
         CD["CommandDispatcher (fineract-command)\n.dispatch()"]
         CH["CommandHandler<REQ,RES>\n.handle()"]
@@ -164,12 +164,12 @@ sequenceDiagram
     participant NCSH as NewCommandSourceHandler impl<br/>(various modules)
     participant DB as Per-Tenant PostgreSQL DB
 
-    AR->>CWB: new CommandWrapperBuilder().<br/>disburseLoan(loanId).build()
+    AR->>CWB: new CommandWrapperBuilder().<br/>disburseLoanApplication(loanId).build()
     AR->>PCSWPS: logCommandSource(wrapper)
     PCSWPS->>PCSWPS: validateHasPermissionTo(taskPermissionName)
     PCSWPS->>SCPS: executeCommand(wrapper, jsonCommand, isApprovedByChecker)
     SCPS->>DB: INSERT command_source (PENDING state)
-    SCPS->>CHP: getHandler(actionName, entityName)
+    SCPS->>CHP: getHandler(entityName, actionName)
     CHP-->>SCPS: NewCommandSourceHandler (e.g. LoanApplicationCommandHandler)
     SCPS->>NCSH: processCommand(jsonCommand)
     NCSH->>DB: UPDATE loan records, INSERT journal entries
@@ -183,11 +183,11 @@ sequenceDiagram
 | Class | File | Role |
 |---|---|---|
 | `CommandWrapper` | `fineract-core/.../commands/domain/CommandWrapper.java` | Immutable DTO carrying `actionName`, `entityName`, entity IDs, JSON body, `taskPermissionName` |
-| `CommandWrapperBuilder` | `fineract-core/.../commands/service/CommandWrapperBuilder.java` | Fluent builder — 300+ methods, one per business operation (e.g., `disburseLoan()`, `approveApplication()`) |
+| `CommandWrapperBuilder` | `fineract-core/.../commands/service/CommandWrapperBuilder.java` | Fluent builder — 300+ methods, one per business operation (e.g., `disburseLoanApplication()`, `approveLoanApplication()`) |
 | `PortfolioCommandSourceWritePlatformService` | `fineract-core/.../commands/service/PortfolioCommandSourceWritePlatformService.java` | Interface: `logCommandSource()`, `approveEntry()`, `deleteEntry()` |
 | `PortfolioCommandSourceWritePlatformServiceImpl` | `fineract-core/.../commands/service/PortfolioCommandSourceWritePlatformServiceImpl.java` | Implementation: permission check, JSON parsing, delegates to `CommandProcessingService` |
 | `SynchronousCommandProcessingService` | `fineract-core/.../commands/service/SynchronousCommandProcessingService.java` | Persists `CommandSource`, dispatches to handler, handles idempotency key logic, fires `HookEvent` |
-| `CommandHandlerProvider` | `fineract-core/.../commands/provider/CommandHandlerProvider.java` | Registry of `NewCommandSourceHandler` beans keyed by `@CommandType(action, entity)` |
+| `CommandHandlerProvider` | `fineract-core/.../commands/provider/CommandHandlerProvider.java` | Registry of `NewCommandSourceHandler` beans keyed by `@CommandType(entity, action)` — key is `entity|action` |
 | `NewCommandSourceHandler` | `fineract-core/.../commands/handler/NewCommandSourceHandler.java` | Interface: `processCommand(JsonCommand)` → `CommandProcessingResult` |
 | `CommandSource` | `fineract-core/.../commands/domain/CommandSource.java` | JPA entity persisted to `m_portfolio_command_source` table |
 
@@ -227,10 +227,15 @@ public interface CommandHandler<REQ, RES> {
 
 ```java
 return () -> {
-    hookManager.before(command);
-    RES response = handlerManager.handle(command);
-    hookManager.after(command, response);
-    return response;
+    try {
+        hookManager.before(command);
+        RES response = handlerManager.handle(command);
+        hookManager.after(command, response);
+        return response;
+    } catch (Exception e) {
+        hookManager.error(command, e);
+        throw e;
+    }
 };
 ```
 
@@ -393,14 +398,14 @@ flowchart TD
 | **Remote/JMS** | `fineract.remote-job-message-handler.jms.enabled=true` | Same as Kafka but using JMS/ActiveMQ (`fineract.remote-job-message-handler.jms.broker-url`) |
 
 <Note>
-The `LOAN_COB` job has a COB API filter: `LoanCOBApiFilter` in `fineract-provider/src/main/java/org/apache/fineract/infrastructure/jobs/filter/LoanCOBApiFilter.java`. Any API request that touches a loan currently being processed by COB will receive a `409 Conflict` response to prevent data races. The filter is registered as a Spring `OncePerRequestFilter`.
+The `LOAN_COB` job has a COB API filter: `LoanCOBApiFilter` in `fineract-provider/src/main/java/org/apache/fineract/infrastructure/jobs/filter/LoanCOBApiFilter.java`. `LoanCOBApiFilter` extends the abstract `COBApiFilter`, which itself extends Spring's `OncePerRequestFilter`. Any API request that touches a loan currently being processed by COB will receive a `409 Conflict` response to prevent data races. `LoanCOBApiFilter` is activated conditionally via `@Conditional(LoanCOBEnabledCondition.class)`.
 </Note>
 
 ---
 
 ## Loan Disbursement: End-to-End Sequence
 
-This sequence diagram traces a `POST /v1/loans/{loanId}/transactions?command=disburse` request from HTTP reception through to database commit.
+This sequence diagram traces a `POST /v1/loans/{loanId}?command=disburse` request from HTTP reception through to database commit. Loan state transitions (approve, disburse, reject, etc.) are handled by `LoansApiResource` (`@Path("/v1/loans")`), not `LoanTransactionsApiResource`.
 
 ```mermaid
 sequenceDiagram
@@ -408,36 +413,36 @@ sequenceDiagram
     participant CLIENT as HTTP Client
     participant TSEC as TenantAwareBasicAuthenticationFilter<br/>(fineract-security)
     participant JC as JerseyConfig / Jersey Dispatch
-    participant LTA as LoanTransactionsApiResource<br/>(fineract-provider)
+    participant LA as LoansApiResource<br/>(fineract-provider)
     participant PCSWPS as PortfolioCommandSourceWritePlatformService<br/>(fineract-core)
     participant SCPS as SynchronousCommandProcessingService<br/>(fineract-core)
     participant CHP as CommandHandlerProvider<br/>(fineract-core)
-    participant LATH as LoanDisbursementCommandHandler<br/>(fineract-loan)
+    participant LATH as DisburseLoanCommandHandler<br/>(@CommandType entity=LOAN action=DISBURSE)<br/>(fineract-loan)
     participant RDS as RoutingDataSource<br/>(fineract-core)
     participant DB as fineract_default PostgreSQL
 
-    CLIENT->>TSEC: POST /fineract-provider/api/v1/loans/42/transactions<br/>?command=disburse<br/>Fineract-Platform-TenantId: default<br/>Authorization: Basic ...
+    CLIENT->>TSEC: POST /fineract-provider/api/v1/loans/42<br/>?command=disburse<br/>Fineract-Platform-TenantId: default<br/>Authorization: Basic ...
     TSEC->>DB: SELECT * FROM fineract_tenants.tenants WHERE identifier='default'
     DB-->>TSEC: FineractPlatformTenantConnection (host, port, schema)
     TSEC->>TSEC: ThreadLocalContextUtil.setTenant(tenant)
     TSEC->>JC: doFilter() → Jersey servlet
-    JC->>LTA: route to @Path("/v1/loans/{loanId}/transactions")<br/>@POST + @QueryParam("command")="disburse"
-    LTA->>LTA: CommandWrapperBuilder.disburseLoan(loanId).build()
-    LTA->>PCSWPS: logCommandSource(CommandWrapper)
-    PCSWPS->>PCSWPS: authenticatedUser.validateHasPermissionTo("DISBURSE_LOAN")
+    JC->>LA: route to @Path("/v1/loans/{loanId}")<br/>@POST + @QueryParam("command")="disburse"
+    LA->>LA: new CommandWrapperBuilder()<br/>.disburseLoanApplication(loanId).build()
+    LA->>PCSWPS: logCommandSource(CommandWrapper)
+    PCSWPS->>PCSWPS: authenticatedUser.validateHasPermissionTo(wrapper.getTaskPermissionName())
     PCSWPS->>SCPS: executeCommand(wrapper, jsonCommand, false)
     SCPS->>RDS: getConnection() [write to m_portfolio_command_source]
     RDS->>DB: INSERT INTO m_portfolio_command_source (status=INITIAL)
-    SCPS->>CHP: getHandler("DISBURSE", "LOAN")
-    CHP-->>SCPS: LoanDisbursementCommandHandler bean
+    SCPS->>CHP: getHandler("LOAN", "DISBURSE")
+    CHP-->>SCPS: DisburseLoanCommandHandler bean
     SCPS->>LATH: processCommand(jsonCommand)
     LATH->>RDS: getConnection() [update loan + journal entries]
     RDS->>DB: UPDATE m_loan SET loan_status=300<br/>INSERT INTO acc_gl_journal_entry (debit/credit)
     DB-->>LATH: success
     LATH-->>SCPS: CommandProcessingResult{loanId:42, resourceId:42}
     SCPS->>DB: UPDATE m_portfolio_command_source SET status=PROCESSED
-    SCPS-->>LTA: CommandProcessingResult
-    LTA-->>CLIENT: 200 OK {"loanId": 42, "resourceId": 42}
+    SCPS-->>LA: CommandProcessingResult
+    LA-->>CLIENT: 200 OK {"loanId": 42, "resourceId": 42}
 ```
 
 ---

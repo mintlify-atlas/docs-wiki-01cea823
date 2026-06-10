@@ -260,9 +260,15 @@ public class MessageHandlerConfig {
     **Worker listener** (`KafkaRemoteMessageListener`):
     ```java
     @KafkaListener(topics = "${fineract.remote-job-message-handler.kafka.topic.name}")
-    public void onMessage(ContextualMessage contextualMessage, Acknowledgment acknowledgment) {
-        StepExecutionRequest req = inputInterceptor.beforeHandleMessage(contextualMessage);
-        stepExecutionRequestHandler.handle(req);
+    public void onMessage(@Payload ContextualMessage contextualMessage, Acknowledgment acknowledgment) {
+        try {
+            StepExecutionRequest req = inputInterceptor.beforeHandleMessage(contextualMessage);
+            stepExecutionRequestHandler.handle(req);
+        } catch (Exception e) {
+            log.error("Exception while processing Kafka message", e);
+        } finally {
+            inputInterceptor.afterHandleMessage(); // resets ThreadLocalContextUtil
+        }
         acknowledgment.acknowledge();
     }
     ```
@@ -289,10 +295,14 @@ public class MessageHandlerConfig {
 | `fineract.remote-job-message-handler.kafka.bootstrap-servers` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka bootstrap servers |
 | `fineract.remote-job-message-handler.kafka.consumer.group-id` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_CONSUMER_GROUPID` | `fineract-consumer-group-id` | Kafka consumer group |
 | `fineract.remote-job-message-handler.kafka.consumer.extra-properties` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_CONSUMER_EXTRA_PROPERTIES` | `""` | Pipe-separated `key=value` extra consumer props |
-| `fineract.remote-job-message-handler.kafka.producer.extra-properties` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_PRODUCER_EXTRA_PROPERTIES` | `""` | Pipe-separated extra producer props |
-| `fineract.remote-job-message-handler.kafka.admin.extra-properties` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_ADMIN_EXTRA_PROPERTIES` | `""` | Pipe-separated extra admin props |
-| `fineract.remote-job-message-handler.kafka.consumer.extra-properties-separator` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_CONSUMER_EXTRA_PROPERTIES_SEPARATOR` | `\|` | Separator between properties |
-| `fineract.remote-job-message-handler.kafka.consumer.extra-properties-key-value-separator` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_CONSUMER_EXTRA_PROPERTIES_KEY_VALUE_SEPARATOR` | `=` | Key/value separator within a property |
+| `fineract.remote-job-message-handler.kafka.consumer.extra-properties-separator` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_CONSUMER_EXTRA_PROPERTIES_SEPARATOR` | `\|` | Item separator for consumer extra props |
+| `fineract.remote-job-message-handler.kafka.consumer.extra-properties-key-value-separator` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_CONSUMER_EXTRA_PROPERTIES_KEY_VALUE_SEPARATOR` | `=` | Key/value separator for consumer extra props |
+| `fineract.remote-job-message-handler.kafka.producer.extra-properties` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_PRODUCER_EXTRA_PROPERTIES` | `""` | Pipe-separated `key=value` extra producer props |
+| `fineract.remote-job-message-handler.kafka.producer.extra-properties-separator` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_PRODUCER_EXTRA_PROPERTIES_SEPARATOR` | `\|` | Item separator for producer extra props |
+| `fineract.remote-job-message-handler.kafka.producer.extra-properties-key-value-separator` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_PRODUCER_EXTRA_PROPERTIES_KEY_VALUE_SEPARATOR` | `=` | Key/value separator for producer extra props |
+| `fineract.remote-job-message-handler.kafka.admin.extra-properties` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_ADMIN_EXTRA_PROPERTIES` | `""` | Pipe-separated `key=value` extra admin props |
+| `fineract.remote-job-message-handler.kafka.admin.extra-properties-separator` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_ADMIN_EXTRA_PROPERTIES_SEPARATOR` | `\|` | Item separator for admin extra props |
+| `fineract.remote-job-message-handler.kafka.admin.extra-properties-key-value-separator` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_ADMIN_EXTRA_PROPERTIES_KEY_VALUE_SEPARATOR` | `=` | Key/value separator for admin extra props |
 
 ## Partitioned Job Tuning Properties
 

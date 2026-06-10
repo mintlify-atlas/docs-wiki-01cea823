@@ -25,7 +25,7 @@ Fineract models a micro-finance institution's organisational structure through a
 | `fineract-branch/…/organisation/teller/api/CashierApiResource.java` | fineract-branch | Cashier list endpoint |
 | `fineract-branch/…/organisation/teller/domain/CashierTransaction.java` | fineract-branch | Cash allocation/settlement rows |
 | `fineract-branch/…/organisation/teller/domain/TellerStatus.java` | fineract-branch | `PENDING(100)`, `ACTIVE(300)`, `INACTIVE(400)`, `CLOSED(600)` enum |
-| `fineract-branch/…/organisation/teller/domain/CashierTxnType.java` | fineract-branch | `ALLOCATE`, `SETTLE`, `INWARD`, `OUTWARD` enum |
+| `fineract-branch/…/organisation/teller/domain/CashierTxnType.java` | fineract-branch | `ALLOCATE(101)`, `SETTLE(102)`, `INWARD_CASH_TXN(103)`, `OUTWARD_CASH_TXN(104)` constants |
 | `fineract-core/…/portfolio/fund/domain/Fund.java` | fineract-core | Fund entity — `m_fund` table |
 | `fineract-provider/…/portfolio/fund/api/FundsApiResource.java` | fineract-provider | Fund CRUD endpoints |
 | `fineract-core/…/infrastructure/accountnumberformat/domain/AccountNumberFormat.java` | fineract-core | AccountNumberFormat entity — `m_account_number_format` |

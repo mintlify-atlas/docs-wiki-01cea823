@@ -15,7 +15,7 @@ Groups and Centers implement **grameen-style** and **joint-liability group (JLG)
 | `fineract-core/.../group/domain/Group.java` | fineract-core | JPA entity, table `m_group` |
 | `fineract-core/.../group/domain/GroupLevel.java` | fineract-core | Level descriptor (CENTER=1, GROUP=2) |
 | `fineract-core/.../group/domain/GroupRole.java` | fineract-core | `m_group_roles` join entity |
-| `fineract-core/.../group/domain/GroupTypes.java` | fineract-core | CENTER/GROUP enum |
+| `fineract-provider/.../group/domain/GroupTypes.java` | fineract-provider | CENTER/GROUP enum |
 | `fineract-core/.../group/domain/GroupingTypeStatus.java` | fineract-core | PENDING/ACTIVE/CLOSED enum |
 | `fineract-core/.../group/data/GroupGeneralData.java` | fineract-core | Read-side DTO |
 | `fineract-core/.../group/data/CenterData.java` | fineract-core | Center-specific DTO |
@@ -87,11 +87,11 @@ Maps to table `m_group` in `fineract-core/.../group/domain/Group.java`. Extends 
 
 ## `GroupTypes` Enum
 
-Defined in `fineract-core/.../group/domain/GroupTypes.java`.
+Defined in `fineract-provider/.../group/domain/GroupTypes.java`.
 
 | Constant | Long ID | Code | Value String |
 |---|---|---|---|
-| `INVALID` | 0 | `groupTypes.invalid` | `invalid` |
+| `INVALID` | 0 | `lendingStrategy.invalid` | `invalid` |
 | `CENTER` | 1 | `groupTypes.center` | `center` |
 | `GROUP` | 2 | `groupTypes.group` | `group` |
 
@@ -148,19 +148,20 @@ A group can only be deleted (`DELETE /v1/groups/{groupId}`) when it is in `PENDI
 
 #### `POST /v1/groups/{groupId}?command=…` — Supported Commands
 
-| `command` | Wrapped As | Effect |
+| `command` | `CommandWrapper` Builder Call | Effect |
 |---|---|---|
-| `activate` | `activateGroupOrCenter` | PENDING → ACTIVE |
-| `close` | `closeGroup` | ACTIVE → CLOSED |
-| `associateClients` | `associateClientsToGroup` | Add clients via `m_group_client` |
-| `disassociateClients` | `disassociateClientsFromGroup` | Remove clients from group |
-| `generateCollectionSheet` | (read, no command) | Returns `JLGCollectionSheetData` |
-| `saveCollectionSheet` | `saveGroupCollectionSheet` | Bulk repayment/disbursal |
-| `assignStaff` | `assignGroupOrCenterStaff` | Assign loan officer |
-| `unassignStaff` | `unassignGroupOrCenterStaff` | Remove loan officer |
-| `assignRole` | `createRole` | Assign a group role |
-| `unassignRole` | `deleteRole` | Remove a group role |
-| `updateRole` | `updateRole` | Update role attributes |
+| `activate` | `builder.activateGroup(groupId)` | PENDING → ACTIVE |
+| `close` | `builder.closeGroup(groupId)` | ACTIVE → CLOSED |
+| `associateClients` | `builder.associateClientsToGroup(groupId)` | Add clients via `m_group_client` |
+| `disassociateClients` | `builder.disassociateClientsFromGroup(groupId)` | Remove clients from group |
+| `generateCollectionSheet` | (read-only, no write command) | Returns `JLGCollectionSheetData` |
+| `saveCollectionSheet` | `builder.saveGroupCollectionSheet(groupId)` | Bulk repayment/disbursal |
+| `assignStaff` | `builder.assignGroupStaff(groupId)` | Assign loan officer |
+| `unassignStaff` | `builder.unassignGroupStaff(groupId)` | Remove loan officer |
+| `assignRole` | `builder.assignRole(groupId)` | Assign a group role |
+| `unassignRole` | `builder.unassignRole(groupId, roleId)` | Remove a group role |
+| `updateRole` | `builder.updateRole(groupId, roleId)` | Update role attributes |
+| `transferClients` | `builder.transferClientsBetweenGroups(groupId)` | Transfer clients between groups |
 
 ---
 
@@ -181,15 +182,14 @@ A group can only be deleted (`DELETE /v1/groups/{groupId}`) when it is in `PENDI
 
 #### `POST /v1/centers/{centerId}?command=…` — Supported Commands
 
-| `command` | Effect |
-|---|---|
-| `activate` | PENDING → ACTIVE via `activateGroupOrCenter` |
-| `close` | ACTIVE → CLOSED via `closeCenter` |
-| `associateGroups` | Link groups to center via `associateGroupsToCenter` |
-| `disassociateGroups` | Unlink groups via `disassociateGroupsToCenter` |
-| `generateCollectionSheet` | Returns `JLGCollectionSheetData` for the center |
-| `saveCollectionSheet` | Bulk repayment/disbursal via `saveCenterCollectionSheet` |
-| `unassignStaff` | Remove staff via `unassignGroupOrCenterStaff` |
+| `command` | `CommandWrapper` Builder Call | Effect |
+|---|---|---|
+| `activate` | `builder.activateCenter(centerId)` | PENDING → ACTIVE |
+| `close` | `builder.closeCenter(centerId)` | ACTIVE → CLOSED |
+| `associateGroups` | `builder.associateGroupsToCenter(centerId)` | Link groups to center |
+| `disassociateGroups` | `builder.disassociateGroupsFromCenter(centerId)` | Unlink groups from center |
+| `generateCollectionSheet` | (read-only, no write command) | Returns `JLGCollectionSheetData` for the center |
+| `saveCollectionSheet` | `builder.saveCenterCollectionSheet(centerId)` | Bulk repayment/disbursal |
 
 ---
 

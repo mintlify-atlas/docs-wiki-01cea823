@@ -1,7 +1,7 @@
 ---
 title: "Key Domain Entities: JPA Model Reference"
 sidebarTitle: "Domain Entities"
-description: "Deep reference for Fineract's core JPA entities: base classes, ExternalId value type, entity relationships, EclipseLink static weaving, and the validation error model."
+description: "Reference for Fineract's core JPA entities: base classes, ExternalId type, entity relationships, EclipseLink static weaving, and validation error handling."
 ---
 
 Apache Fineract's persistence layer is built on JPA with EclipseLink as the provider and Spring Data JPA for repository infrastructure. Every persistent entity inherits from one of two abstract base classes in `fineract-core/src/main/java/org/apache/fineract/infrastructure/core/domain/`. This page covers every major entity, the inheritance hierarchy, the `ExternalId` value type, the full entity-relationship model, EclipseLink static weaving configuration, and the validation error accumulation pattern.

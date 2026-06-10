@@ -93,6 +93,7 @@ Each tenant's own database (e.g., `fineract_default`) is created/connected using
 | `fineract.tenant.read-only-port` | `FINERACT_DEFAULT_TENANTDB_RO_PORT` | _(empty)_ | Read replica port |
 | `fineract.tenant.read-only-username` | `FINERACT_DEFAULT_TENANTDB_RO_UID` | _(empty)_ | Read replica username |
 | `fineract.tenant.read-only-password` | `FINERACT_DEFAULT_TENANTDB_RO_PWD` | _(empty)_ | Read replica password |
+| `fineract.tenant.read-only-parameters` | `FINERACT_DEFAULT_TENANTDB_RO_CONN_PARAMS` | _(empty)_ | Extra JDBC params for read replica |
 | `fineract.tenant.read-only-name` | `FINERACT_DEFAULT_TENANTDB_RO_NAME` | _(empty)_ | Read replica DB name |
 | `fineract.tenant.config.min-pool-size` | `FINERACT_CONFIG_MIN_POOL_SIZE` | `-1` | Tenant connection pool min (-1 = default) |
 | `fineract.tenant.config.max-pool-size` | `FINERACT_CONFIG_MAX_POOL_SIZE` | `-1` | Tenant connection pool max |
@@ -145,6 +146,7 @@ Set `spring.security.oauth2.resourceserver.jwt.issuer-uri` (commented out by def
 | `fineract.security.oidc-federation.tenant-claim-name` | `FINERACT_SECURITY_OIDC_TENANT_CLAIM` | `fineract_tenant` | JWT claim that maps to tenant |
 | `fineract.security.oidc-federation.username-claim` | `FINERACT_SECURITY_OIDC_USERNAME_CLAIM` | `preferred_username` | JWT claim used as username |
 | `fineract.security.oidc-federation.auto-create-user` | `FINERACT_SECURITY_OIDC_AUTO_CREATE_USER` | `false` | Auto-provision users from JWT |
+| `fineract.security.oidc-federation.default-roles` | `FINERACT_SECURITY_OIDC_DEFAULT_ROLES` | _(empty)_ | Default roles assigned to auto-created users |
 | `fineract.security.oidc-federation.provider` | `FINERACT_SECURITY_OIDC_PROVIDER` | `generic` | Provider hint (`keycloak`, `azure`, etc.) |
 | `fineract.security.oidc-federation.post-logout-redirect-uri` | `FINERACT_SECURITY_OIDC_POST_LOGOUT_URI` | _(empty)_ | Post-logout redirect |
 
@@ -175,6 +177,7 @@ Controls which roles this node fulfills in a distributed Fineract cluster. The K
 | `fineract.partitioned-job.partitioned-job-properties[0].partition-size` | `LOAN_COB_PARTITION_SIZE` | `100` | Loans per partition |
 | `fineract.partitioned-job.partitioned-job-properties[0].thread-pool-core-pool-size` | `LOAN_COB_THREAD_POOL_CORE_POOL_SIZE` | `5` | Worker thread pool core size |
 | `fineract.partitioned-job.partitioned-job-properties[0].thread-pool-max-pool-size` | `LOAN_COB_THREAD_POOL_MAX_POOL_SIZE` | `5` | Worker thread pool max size |
+| `fineract.partitioned-job.partitioned-job-properties[0].thread-pool-queue-capacity` | `LOAN_COB_THREAD_POOL_QUEUE_CAPACITY` | `20` | Worker thread pool queue capacity |
 | `fineract.partitioned-job.partitioned-job-properties[0].retry-limit` | `LOAN_COB_RETRY_LIMIT` | `5` | Per-loan step retry limit |
 | `fineract.partitioned-job.partitioned-job-properties[0].poll-interval` | `LOAN_COB_POLL_INTERVAL` | `500` | Worker poll interval (ms) |
 
@@ -257,6 +260,8 @@ Each named processor can be independently enabled/disabled. All default to `true
 | `fineract.loan.transactionprocessor.heavensfamily.enabled` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_HEAVENSFAMILY_ENABLED` | Heavens Family |
 | `fineract.loan.transactionprocessor.interest-principal-penalties-fees.enabled` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_INTEREST_PRINCIPAL_PENALTIES_FEES_ENABLED` | Interest → Principal → Penalties → Fees |
 | `fineract.loan.transactionprocessor.principal-interest-penalties-fees.enabled` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_PRINCIPAL_INTEREST_PENALTIES_FEES_ENABLED` | Principal → Interest → Penalties → Fees |
+| `fineract.loan.transactionprocessor.due-penalty-fee-interest-principal-in-advance-principal-penalty-fee-interest.enabled` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_DUE_PENALTY_FEE_INTEREST_PRINCIPAL_IN_ADVANCE_PRINCIPAL_PENALTY_FEE_INTEREST_ENABLED` | Due Penalty/Fee/Interest/Principal → In-Advance Principal/Penalty/Fee/Interest |
+| `fineract.loan.transactionprocessor.due-penalty-interest-principal-fee-in-advance-penalty-interest-principal-fee.enabled` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_DUE_PENALTY_INTEREST_PRINCIPAL_FEE_IN_ADVANCE_PENALTY_INTEREST_PRINCIPAL_FEE_ENABLED` | Due Penalty/Interest/Principal/Fee → In-Advance Penalty/Interest/Principal/Fee |
 | `fineract.loan.transactionprocessor.rbi-india.enabled` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_RBI_INDIA_ENABLED` | RBI India |
 | `fineract.loan.transactionprocessor.error-not-found-fail` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_ERROR_NOT_FOUND_FAIL` | Fail if processor not found |
 
@@ -341,3 +346,103 @@ These patterns are assembled into three validation profiles: `main`, `adhoc`, an
 | `fineract.cache.default-template.maximum-entries` | `1000` | Default cache size |
 | `fineract.cache.custom-templates.userTFAccessToken.ttl` | `2h` | 2FA token cache TTL |
 | `fineract.cache.custom-templates.userTFAccessToken.maximum-entries` | `10000` | 2FA token cache size |
+
+---
+
+## Task Executor
+
+Fineract maintains two shared task executor thread pools, plus a dedicated single-threaded pool for Liquibase tenant upgrades (restricted to one thread due to a Liquibase thread-safety limitation).
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.task-executor.default-task-executor-core-pool-size` | `FINERACT_DEFAULT_TASK_EXECUTOR_CORE_POOL_SIZE` | `10` | Default task executor core threads |
+| `fineract.task-executor.default-task-executor-max-pool-size` | `FINERACT_DEFAULT_TASK_EXECUTOR_MAX_POOL_SIZE` | `100` | Default task executor max threads |
+| `fineract.task-executor.tenant-upgrade-task-executor-core-pool-size` | _(hardcoded to 1)_ | `1` | Liquibase upgrade pool core (intentionally single-threaded) |
+| `fineract.task-executor.tenant-upgrade-task-executor-max-pool-size` | _(hardcoded to 1)_ | `1` | Liquibase upgrade pool max (intentionally single-threaded) |
+| `fineract.task-executor.tenant-upgrade-task-executor-queue-capacity` | `FINERACT_TENANT_UPGRADE_TASK_EXECUTOR_QUEUE_CAPACITY` | `100` | Liquibase upgrade queue capacity |
+
+---
+
+## Command Processing
+
+Controls the CQRS command bus, JDBC audit store, and per-request processing hooks.
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.command.enabled` | _(hardcoded)_ | `true` | Enable command processing |
+| `fineract.command.jdbc.enabled` | `FINERACT_COMMAND_JDBC_ENABLED` | `true` | Enable JDBC-backed command store |
+| `fineract.command.jdbc.file-dead-letter-queue-enabled` | `FINERACT_COMMAND_JDBC_FILE_DEAD_LETTER_QUEUE_ENABLED` | `false` | Write failed commands to a file DLQ |
+| `fineract.command.jdbc.file-dead-letter-queue-path` | `FINERACT_COMMAND_JDBC_FILE_DEAD_LETTER_QUEUE_PATH` | `/tmp/fineract/dlq` | File DLQ directory path |
+| `fineract.command.audit.enabled` | `FINERACT_COMMAND_AUDIT_ENABLED` | `true` | Enable command audit trail |
+| `fineract.command.hooks.audit-pre` | `FINERACT_COMMAND_PROCESSORS_AUDIT_PRE` | `true` | Pre-execution audit hook |
+| `fineract.command.hooks.audit-post` | `FINERACT_COMMAND_PROCESSORS_AUDIT_POST` | `true` | Post-execution audit hook |
+| `fineract.command.hooks.audit-error` | `FINERACT_COMMAND_PROCESSORS_AUDIT_ERROR` | `true` | Error audit hook |
+| `fineract.command.hooks.servlet-header-pre` | `FINERACT_COMMAND_PROCESSORS_SERVLET_HEADER_PRE` | `true` | Servlet header pre-processing hook |
+| `fineract.command.hooks.timestamp-pre` | `FINERACT_COMMAND_PROCESSORS_TIMESTAMP_PRE` | `true` | Timestamp pre-processing hook |
+| `fineract.command.hooks.username-pre` | `FINERACT_COMMAND_PROCESSORS_USERNAME_PRE` | `true` | Username pre-processing hook |
+| `fineract.command.idempotency-key-header-name` | `FINERACT_IDEMPOTENCY_KEY_HEADER_NAME` | `Idempotency-Key` | Idempotency header name (command module copy) |
+
+### Command Retry (`executeCommand`)
+
+| Property | Env Var | Default |
+|---|---|---|
+| `fineract.retry.instances.executeCommand.max-attempts` | `FINERACT_COMMAND_PROCESSING_RETRY_MAX_ATTEMPTS` | `3` |
+| `fineract.retry.instances.executeCommand.wait-duration` | `FINERACT_COMMAND_PROCESSING_RETRY_WAIT_DURATION` | `1s` |
+| `fineract.retry.instances.executeCommand.enable-exponential-backoff` | `FINERACT_COMMAND_PROCESSING_RETRY_ENABLE_EXPONENTIAL_BACKOFF` | `true` |
+| `fineract.retry.instances.executeCommand.exponential-backoff-multiplier` | `FINERACT_COMMAND_PROCESSING_RETRY_EXPONENTIAL_BACKOFF_MULTIPLIER` | `2` |
+
+---
+
+## Datasource Connection Checkout Diagnostics
+
+When enabled, logs a stack trace whenever a connection is checked out from the pool, useful for diagnosing connection leaks.
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.datasource.connection-checkout-diagnostics.enabled` | `FINERACT_DATASOURCE_CONNECTION_CHECKOUT_DIAGNOSTICS_ENABLED` | `false` | Enable checkout diagnostics |
+| `fineract.datasource.connection-checkout-diagnostics.stack-depth` | `FINERACT_DATASOURCE_CONNECTION_CHECKOUT_DIAGNOSTICS_STACK_DEPTH` | `12` | Stack frames to capture |
+
+---
+
+## Sampling
+
+Probabilistic API request sampling for performance analysis. Captures a fraction of requests to reduce overhead.
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.sampling.enabled` | `FINERACT_SAMPLING_ENABLED` | `false` | Enable request sampling |
+| `fineract.sampling.samplingRate` | `FINERACT_SAMPLING_RATE` | `1000` | Sample 1 in N requests |
+| `fineract.sampling.sampledClasses` | `FINERACT_SAMPLED_CLASSES` | _(empty)_ | Comma-separated class names to sample |
+| `fineract.sampling.resetPeriodSec` | `FINERACT_SAMPLING_RESET_PERIOD_IN_SEC` | `60` | Counter reset period (seconds) |
+
+---
+
+## Client HTTP Timeouts
+
+Timeouts for outbound HTTP calls made by Fineract (e.g. webhook deliveries).
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.client-connect-timeout` | `FINERACT_CLIENT_CONNECT_TIMEOUT` | `30` | Connect timeout (seconds) |
+| `fineract.client-read-timeout` | `FINERACT_CLIENT_READ_TIMEOUT` | `30` | Read timeout (seconds) |
+| `fineract.client-write-timeout` | `FINERACT_CLIENT_WRITE_TIMEOUT` | `30` | Write timeout (seconds) |
+
+---
+
+## API Limits
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.api.body-item-size-limit.inline-loan-cob` | `FINERACT_API_REQUEST_BODY_SIZE_LIMIT_INLINE_COB` | `1000` | Max loan IDs in inline COB request body |
+
+---
+
+## SpringDoc / OpenAPI UI
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `springdoc.api-docs.path` | `SPRINGDOC_API_DOCS_PATH` | `/api-docs` | OpenAPI JSON endpoint path |
+| `springdoc.api-docs.enabled` | `SPRINGDOC_API_DOCS_ENABLED` | `true` | Enable OpenAPI docs endpoint |
+| `springdoc.swagger-ui.enabled` | `SPRINGDOC_SWAGGER_UI_ENABLED` | `true` | Enable Swagger UI |
+| `springdoc.use-management-port` | `SPRINGDOC_USE_MANAGEMENT_PORT` | `false` | Serve docs on management port |
+| `springdoc.show-actuator` | `SPRINGDOC_SHOW_ACTUATOR` | `false` | Include actuator endpoints in docs |

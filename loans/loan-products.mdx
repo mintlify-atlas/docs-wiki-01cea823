@@ -63,7 +63,7 @@ Table: `m_product_loan`. Annotated `@Entity` in `fineract-loan/.../loanproduct/d
 | `fund` | `fund_id` | Default funding source |
 | `startDate` | `start_date` | Product activation date |
 | `closeDate` | `close_date` | Product deactivation date |
-| `accountingRule` | `accounting_type` | `AccountingRuleType`: NONE, CASH, ACCRUAL_PERIODIC, ACCRUAL_UPFRONT |
+| `accountingRule` | `accounting_type` | `AccountingRuleType`: NONE, CASH_BASED, ACCRUAL_PERIODIC, ACCRUAL_UPFRONT |
 | `transactionProcessingStrategyCode` | `loan_transaction_strategy_code` | Default repayment strategy code |
   </Tab>
   <Tab title="Configuration Flags">
@@ -297,10 +297,10 @@ Loan products link to GL accounts via `m_product_to_gl_account_mapping`. The `Ac
 
 | Accounting Rule | Required GL Account Types |
 |---|---|
-| `NONE` (0) | None |
-| `CASH_BASED` (1) | Fund Source, Loan Portfolio, Income from Interest, Income from Fees, Losses |
-| `ACCRUAL_PERIODIC` (2) | All cash accounts + Accrual accounts (Interest Receivable, Fee Receivable) |
-| `ACCRUAL_UPFRONT` (3) | All accrual accounts + Deferred Income accounts |
+| `NONE` (1) | None |
+| `CASH_BASED` (2) | Fund Source, Loan Portfolio, Income from Interest, Income from Fees, Losses |
+| `ACCRUAL_PERIODIC` (3) | All cash accounts + Accrual accounts (Interest Receivable, Fee Receivable) |
+| `ACCRUAL_UPFRONT` (4) | All accrual accounts + Deferred Income accounts |
 
 ---
 

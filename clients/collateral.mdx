@@ -320,23 +320,27 @@ loanCollateralManagementRepository.deleteById(id);
 ## Collateral Release on Loan Closure
 
 <Steps>
-  <Step title="Loan is closed (repaid, written-off, or foreclosed)">
-    The loan write service triggers collateral release processing.
+  <Step title="Loan is rejected or application is undone">
+    `LoanApplicationWritePlatformServiceJpaRepositoryImpl` (`fineract-provider/.../loanaccount/service/`) triggers collateral release via its private `releaseAttachedCollaterals(Loan loan)` helper or inline release logic.
   </Step>
-  <Step title="LoanCollateralAssembler processes pledges">
-    `LoanCollateralAssembler` (`fineract-provider/.../collateralmanagement/service/LoanCollateralAssembler.java`) iterates all `LoanCollateralManagement` rows linked to the loan.
+  <Step title="All LoanCollateralManagement rows for the loan are iterated">
+    The service iterates `loan.getLoanCollateralManagements()` — every `LoanCollateralManagement` row linked to the loan.
   </Step>
   <Step title="isReleased flag set to true">
-    Each `LoanCollateralManagement.isReleased` is set to `true` and the row is updated.
+    Each `LoanCollateralManagement.isReleased` is set to `true` and the row is updated in the same transaction.
   </Step>
   <Step title="Client inventory restored">
-    `ClientCollateralManagement.updateQuantityAfterLoanClosed(quantity)` is called, which performs `this.quantity = this.quantity.add(quantity)` — returning the pledged units to the client's free inventory.
+    `ClientCollateralManagement.updateQuantity(currentQty.add(pledgedQty))` is called, which adds the pledged units back into the client's free inventory. The `updateQuantityAfterLoanClosed(quantity)` convenience method (defined as `this.quantity = this.quantity.add(quantity)`) is used in the undo-application path.
   </Step>
 </Steps>
 
 <Info>
-After closure, the `LoanCollateralManagement` row is retained (with `is_released = true`) for audit purposes. The quantity is not physically deleted until `DELETE /v1/loan-collateral-management/{id}` is called explicitly.
+After release, the `LoanCollateralManagement` row is retained (with `is_released = true`) for audit purposes. The quantity is not physically deleted until `DELETE /v1/loan-collateral-management/{id}` is called explicitly.
 </Info>
+
+<Note>
+`LoanCollateralAssembler` (`fineract-provider/.../collateralmanagement/service/LoanCollateralAssembler.java`) is used during **loan creation and modification** to parse the collateral JSON array and build `LoanCollateralManagement` objects — it does not participate in the release/closure path.
+</Note>
 
 ---
 
@@ -355,8 +359,8 @@ When a loan is created and collateral is pledged:
 - `ClientCollateralManagement.quantity` is **reduced** by the pledged amount.
 - A `LoanCollateralManagement` row is created with the pledged quantity and `isReleased = false`.
 
-When the loan is closed:
-- `ClientCollateralManagement.quantity` is **increased** by the released amount (via `updateQuantityAfterLoanClosed`).
+When the loan is rejected or its application is undone:
+- `ClientCollateralManagement.quantity` is **increased** by the released amount (via `updateQuantity(qty.add(pledged))` or `updateQuantityAfterLoanClosed(pledged)`).
 - `LoanCollateralManagement.isReleased` is set to `true`.
 
 ---

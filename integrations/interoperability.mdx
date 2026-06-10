@@ -32,7 +32,7 @@ The `interoperation` module implements the Fineract side of a financial interope
 | `fineract-savings/.../interoperation/domain/InteropTransferActionType.java` | PREPARE/CREATE/RELEASE |
 | `fineract-savings/.../interoperation/domain/InteropAmountType.java` | SEND/RECEIVE |
 | `fineract-savings/.../interoperation/domain/InteropInitiatorType.java` | CONSUMER/AGENT/BUSINESS/DEVICE |
-| `fineract-savings/.../interoperation/domain/InteropTransactionScenario.java` | TRANSFER/DEPOSIT/WITHDRAWAL/etc. |
+| `fineract-savings/.../interoperation/domain/InteropTransactionScenario.java` | DEPOSIT/WITHDRAWAL/TRANSFER/PAYMENT/REFUND enum |
 | `data/InteropTransactionRequestData.java` | Request body for transaction requests |
 | `data/InteropQuoteRequestData.java` | Request body for quote requests |
 | `data/InteropTransferRequestData.java` | Request body for transfer operations |
@@ -132,7 +132,7 @@ public enum InteropAmountType {
 
 ```java
 public enum InteropTransactionScenario {
-    TRANSFER, DEPOSIT, WITHDRAWAL, PAYMENT, REFUND
+    DEPOSIT, WITHDRAWAL, TRANSFER, PAYMENT, REFUND
 }
 ```
 

@@ -285,7 +285,8 @@ These modules have zero or minimal dependencies on other Fineract modules. They 
 | `conditions/BatchManagerCondition.java` | `@Conditional` for manager-side beans |
 | `conditions/BatchWorkerCondition.java` | `@Conditional` for worker-side beans |
 | `data/COBParameter.java` | `minId`, `maxId` ID range for a partition |
-| `api/InternalCOBApiResource.java` | Internal COB trigger endpoints |
+
+COB API resources live in `fineract-provider` (the assembly module) under `src/main/java/org/apache/fineract/cob/api/`: `InternalCOBApiResource.java`, `LoanCOBCatchUpApiResource.java`, `ConfigureBusinessStepApiResource.java`, `LoanAccountLockApiResource.java`.
 
 ### `fineract-command-test`
 

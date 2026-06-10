@@ -179,9 +179,10 @@ public class AcmeLoanAutoConfiguration {
     @Bean
     public LoanRepaymentScheduleTransactionProcessorFactory
             loanRepaymentScheduleTransactionProcessorFactory(
-                AcmeLoanRepaymentScheduleTransactionProcessor defaultProcessor,
+                AcmeLoanRepaymentScheduleTransactionProcessor defaultLoanRepaymentScheduleTransactionProcessor,
                 List<LoanRepaymentScheduleTransactionProcessor> processors) {
-        return new LoanRepaymentScheduleTransactionProcessorFactory(defaultProcessor, processors);
+        return new LoanRepaymentScheduleTransactionProcessorFactory(
+                defaultLoanRepaymentScheduleTransactionProcessor, processors);
     }
 }
 ```
@@ -259,17 +260,24 @@ public class AcmeNoopBusinessStep implements LoanCOBBusinessStep, InitializingBe
 
 ## Implementing a Custom Loan Transaction Processor
 
-Extend `AbstractLoanRepaymentScheduleTransactionProcessor` from `fineract-loan`:
+Extend `FineractStyleLoanRepaymentScheduleTransactionProcessor` (or `AbstractLoanRepaymentScheduleTransactionProcessor`) from `fineract-loan`. The `acme` example extends the Fineract-style base class:
 
 **Example:** `custom/acme/loan/processor/src/main/java/com/acme/fineract/loan/processor/AcmeLoanRepaymentScheduleTransactionProcessor.java`
 
 ```java
 @Component
 public class AcmeLoanRepaymentScheduleTransactionProcessor
-        extends AbstractLoanRepaymentScheduleTransactionProcessor {
+        extends FineractStyleLoanRepaymentScheduleTransactionProcessor {
 
-    public static final String STRATEGY_CODE = "acme-loan-strategy";
-    public static final String STRATEGY_NAME = "ACME Loan Strategy";
+    public static final String STRATEGY_CODE = "acme-standard-strategy";
+    public static final String STRATEGY_NAME = "ACME Corp.: standard loan transaction processing strategy";
+
+    public AcmeLoanRepaymentScheduleTransactionProcessor(
+            final ExternalIdFactory externalIdFactory,
+            final LoanChargeValidator loanChargeValidator,
+            final LoanBalanceService loanBalanceService) {
+        super(externalIdFactory, loanChargeValidator, loanBalanceService);
+    }
 
     @Override
     public String getCode() { return STRATEGY_CODE; }

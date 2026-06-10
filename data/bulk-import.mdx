@@ -30,7 +30,7 @@ Fineract's bulk-import subsystem lets operators upload Apache POI Excel workbook
 | `BulkImportWorkbookPopulatorService.java` | `...bulkimport.service` (core) | SPI: `getTemplate()` |
 | `BulkImportWorkbookPopulatorServiceImpl.java` | `...bulkimport.service` | Template generation for all entity types |
 | `BulkImportEventListener.java` | `...bulkimport.service` | `ApplicationListener<BulkImportEvent>` – dispatches to `ImportHandler` beans |
-| `BulkImportEvent.java` | `...bulkimport.data` | Spring event carrying `Workbook`, locale, dateFormat, `ImportDocument` |
+| `BulkImportEvent.java` | `...bulkimport.data` | Spring event carrying `Workbook`, `ImportDocument`, locale, dateFormat, fileName, fileType, `FineractContext`, entityId |
 | `ImportHandler.java` | `...bulkimport.importhandler` | SPI: `Count process(Workbook, locale, dateFormat)` |
 | `ImportHandlerUtils.java` | `...bulkimport.importhandler` | Shared cell-reading utilities |
 | `ImportDocument.java` | `...bulkimport.domain` | JPA entity – `m_import_document` |
@@ -69,29 +69,50 @@ There is no `POST /v1/imports` endpoint in `BulkImportApiResource`. Upload is do
 
 ## `GlobalEntityType` Enum
 
-`fineract-core/.../bulkimport/data/GlobalEntityType.java` defines all importable types:
+`fineract-core/.../bulkimport/data/GlobalEntityType.java` defines the complete set of entity type codes used throughout bulk import and document management. The `BulkImportEventListener` switch handles a subset of these for actual workbook import; the rest are used for document and event routing.
 
-| Enum | Code | Value |
-|------|------|-------|
-| `CLIENTS_PERSON` | `clients.person` | 1 |
-| `CLIENTS_ENTITY` | `clients.entity` | 2 |
-| `GROUPS` | `groups` | 3 |
-| `CENTERS` | `centers` | 4 |
-| `OFFICES` | `offices` | 5 |
-| `STAFF` | `staff` | 6 |
-| `USERS` | `users` | 7 |
-| `LOANS` | `loans` | 15 |
-| `LOAN_TRANSACTIONS` | `loantransactions` | 18 |
-| `GUARANTORS` | `guarantors` | 19 |
-| `SAVINGS_ACCOUNT` | `savingsaccount` | 23 |
-| `SAVINGS_TRANSACTIONS` | `savingstransactions` | 25 |
-| `GL_JOURNAL_ENTRIES` | `gljournalentries` | 27 |
-| `CHART_OF_ACCOUNTS` | `chartofaccounts` | 30 |
-| `FIXED_DEPOSIT_ACCOUNTS` | `fixeddepositaccounts` | 31 |
-| `FIXED_DEPOSIT_TRANSACTIONS` | `fixeddeposittransactions` | 32 |
-| `SHARE_ACCOUNTS` | `shareaccounts` | 33 |
-| `RECURRING_DEPOSIT_ACCOUNTS` | `recurringdeposits` | 34 |
-| `RECURRING_DEPOSIT_ACCOUNTS_TRANSACTIONS` | `recurringdepositstransactions` | 35 |
+| Enum | Code | Value | Import Handler |
+|------|------|-------|----------------|
+| `INVALID` | `invalid` | 0 | — |
+| `CLIENTS_PERSON` | `clients.person` | 1 | `clientPersonImportHandler` |
+| `CLIENTS_ENTITY` | `clients.entity` | 2 | `clientEntityImportHandler` |
+| `GROUPS` | `groups` | 3 | `groupImportHandler` |
+| `CENTERS` | `centers` | 4 | `centerImportHandler` |
+| `OFFICES` | `offices` | 5 | `officeImportHandler` |
+| `STAFF` | `staff` | 6 | `staffImportHandler` |
+| `USERS` | `users` | 7 | `userImportHandler` |
+| `SMS` | `sms` | 8 | — |
+| `DOCUMENTS` | `documents` | 9 | — |
+| `TEMPLATES` | `templates` | 10 | — |
+| `NOTES` | `templates` | 11 | — (note: shares code with `TEMPLATES`) |
+| `CALENDAR` | `calendar` | 12 | — |
+| `MEETINGS` | `meetings` | 13 | — |
+| `HOLIDAYS` | `holidays` | 14 | — |
+| `LOANS` | `loans` | 15 | `loanImportHandler` |
+| `LOAN_PRODUCTS` | `loancharges` | 16 | — |
+| `LOAN_TRANSACTIONS` | `loantransactions` | 18 | `loanRepaymentImportHandler` |
+| `GUARANTORS` | `guarantors` | 19 | `guarantorImportHandler` |
+| `COLLATERALS` | `collaterals` | 20 | — |
+| `FUNDS` | `funds` | 21 | — |
+| `CURRENCY` | `currencies` | 22 | — |
+| `SAVINGS_ACCOUNT` | `savingsaccount` | 23 | `savingsImportHandler` |
+| `SAVINGS_CHARGES` | `savingscharges` | 24 | — |
+| `SAVINGS_TRANSACTIONS` | `savingstransactions` | 25 | `savingsTransactionImportHandler` |
+| `SAVINGS_PRODUCTS` | `savingsproducts` | 26 | — |
+| `GL_JOURNAL_ENTRIES` | `gljournalentries` | 27 | `journalEntriesImportHandler` |
+| `CODE_VALUE` | `codevalue` | 28 | — |
+| `CODE` | `code` | 29 | — |
+| `CHART_OF_ACCOUNTS` | `chartofaccounts` | 30 | `chartOfAccountsImportHandler` |
+| `FIXED_DEPOSIT_ACCOUNTS` | `fixeddepositaccounts` | 31 | `fixedDepositImportHandler` |
+| `FIXED_DEPOSIT_TRANSACTIONS` | `fixeddeposittransactions` | 32 | `fixedDepositTransactionImportHandler` |
+| `SHARE_ACCOUNTS` | `shareaccounts` | 33 | `sharedAccountImportHandler` |
+| `RECURRING_DEPOSIT_ACCOUNTS` | `recurringdeposits` | 34 | `recurringDepositImportHandler` |
+| `RECURRING_DEPOSIT_ACCOUNTS_TRANSACTIONS` | `recurringdepositstransactions` | 35 | `recurringDepositTransactionImportHandler` |
+| `CLIENT` | `client` | 36 | — (used for `?entityType=client` merge query in `BulkImportApiResource`) |
+
+<Note>
+`NOTES(11)` and `TEMPLATES(10)` both use the code string `"templates"` — this is the actual value in the source. The `BulkImportApiResource` merges `CLIENTS_PERSON` and `CLIENTS_ENTITY` when `?entityType=client` (value 36) is passed, delegating to `GlobalEntityType.CLIENT.getCode()` for the comparison.
+</Note>
 
 ---
 
@@ -130,7 +151,7 @@ public final class ImportDocument extends AbstractPersistableCustom<Long> {
     An `ImportDocument` is created with `completed = false` and the document is persisted via `DocumentWritePlatformService`. The document ID is stored in `ImportDocument.documentId`.
   </Step>
   <Step title="BulkImportEvent Published">
-    `BulkImportEvent` is published via Spring's `ApplicationContext.publishEvent()`. It carries the `Workbook` object, locale, dateFormat, `ImportDocument`, and entity ID.
+    `BulkImportEvent` is published via Spring's `ApplicationContext.publishEvent()`. It carries: `Workbook`, `ImportDocument`, `locale`, `dateFormat`, `fileName`, `fileType`, `FineractContext`, and `entityId` (the authenticated user's ID).
   </Step>
   <Step title="BulkImportEventListener Routes">
     `BulkImportEventListener.onApplicationEvent()` uses a `switch` on `GlobalEntityType` to look up the correct `ImportHandler` bean by name from `ApplicationContext`.

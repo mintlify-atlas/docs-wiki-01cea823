@@ -288,7 +288,7 @@ All handlers are in `fineract-provider/src/main/java/org/apache/fineract/useradm
 | `CreateUserCommandHandler` | `entity=USER, action=CREATE` | Calls `JpaUserDomainService.create()` |
 | `UpdateUserCommandHandler` | `entity=USER, action=UPDATE` | Updates user fields including password |
 | `DeleteUserCommandHandler` | `entity=USER, action=DELETE` | Soft-deletes user |
-| `ChangeUserPasswordCommandHandler` | `entity=USER, action=CHANGEPASSWORD` | Changes password; validates not same as previous |
+| `ChangeUserPasswordCommandHandler` | `entity=USER, action=CHANGEPWD` | Changes password; validates not same as previous |
 | `CreateRoleCommandHandler` | `entity=ROLE, action=CREATE` | Creates new `Role` entity |
 | `UpdateRoleCommandHandler` | `entity=ROLE, action=UPDATE` | Updates role name/description |
 | `DeleteRoleCommandHandler` | `entity=ROLE, action=DELETE` | Deletes role if not associated to any user |

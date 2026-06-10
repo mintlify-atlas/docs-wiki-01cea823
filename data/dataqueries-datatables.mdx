@@ -1,7 +1,7 @@
 ---
 title: "Datatables, Adhoc Queries & Entity Checks"
 sidebarTitle: "Datatables"
-description: "Deep dive into Fineract's dynamic datatable system: registering tables, entity checks, generic resultsets, the DatatablesApiResource endpoints, and adhoc querying."
+description: "Fineract's datatable subsystem: EntityTables enum, EntityDatatableChecks enforcement, GenericResultsetData, all CRUD endpoints, and the AdHocApiResource."
 ---
 
 Fineract's **datatable subsystem** lets operators plug arbitrary MySQL tables into the platform and expose them over a uniform CRUD API without writing Java code. A "datatable" is any MySQL table with a foreign-key column pointing at a core application table (`m_client`, `m_loan`, etc.). Once registered in `x_registered_table`, Fineract enforces permission checks, scopes rows to the authenticated user's office hierarchy, and serialises results via `GenericResultsetData`. The same infrastructure backs the built-in reporting layer (`stretchy_report`) and can gate lifecycle transitions (e.g. loan approval) behind required datatable completion via `m_entity_datatable_check`.
@@ -11,11 +11,12 @@ Fineract's **datatable subsystem** lets operators plug arbitrary MySQL tables in
 ## File Inventory
 
 | File | Package | Purpose |
-|------|---------|---------|
+|------|---------|---------|\
 | `DatatablesApiResource.java` | `...dataqueries.api` | REST resource – all `/v1/datatables` endpoints |
 | `EntityDatatableChecksApiResource.java` | `...dataqueries.api` | REST resource – `/v1/entityDatatableChecks` |
 | `ReportsApiResource.java` | `...dataqueries.api` | REST resource – `/v1/reports` CRUD |
 | `RunreportsApiResource.java` | `...dataqueries.api` | REST resource – `/v1/runreports/{reportName}` execution |
+| `AdHocApiResource.java` | `...adhocquery.api` | REST resource – `/v1/adhocquery` CRUD |
 | `DatatableReadServiceImpl.java` | `...dataqueries.service` | Query / metadata read implementation |
 | `DatatableWriteServiceImpl.java` | `...dataqueries.service` | DDL mutation and DML write operations |
 | `GenericDataServiceImpl.java` | `...dataqueries.service` | Low-level SQL→`GenericResultsetData` conversion |
@@ -33,6 +34,8 @@ Fineract's **datatable subsystem** lets operators plug arbitrary MySQL tables in
 | `ResultsetColumnHeaderData.java` | `...dataqueries.data` | Column metadata (type, length, nullable, code) |
 | `DatatableData.java` | `...dataqueries.data` | DTO: `applicationTableName`, `registeredTableName`, `columnHeaderData` |
 | `EntityTables.java` | `...dataqueries.data` (core) | Enum of all valid `apptableName` values |
+| `StatusEnum.java` | `...dataqueries.data` (core) | Lifecycle status integers used in entity-datatable checks |
+| `AdHoc.java` | `...adhocquery.domain` | JPA entity – `m_adhoc` (scheduled SQL queries) |
 | `DataQueriesAutoConfiguration.java` | `...dataqueries.starter` | Spring Boot auto-config wiring the subsystem |
 
 ---
@@ -62,13 +65,13 @@ public class RegisteredDatatable extends AbstractPersistableCustom<Long> {
 public class EntityDatatableChecks extends AbstractPersistableCustom<Long> {
     String  entity;          // application_table_name
     String  datatableName;   // x_registered_table_name
-    Integer status;          // status_enum (lifecycle status integer)
+    Integer status;          // status_enum (lifecycle status integer from StatusEnum)
     boolean systemDefined;
     Long    productId;       // nullable – restrict to specific product
 }
 ```
 
-When a lifecycle transition fires (e.g. loan approval at `status = 200`), `EntityDatatableChecksWritePlatformServiceImpl` queries this table and throws `DatatableEntryRequiredException` if any required table has no rows for that entity ID.
+When a lifecycle transition fires (e.g. loan approval at `status = 200`), `EntityDatatableChecksWritePlatformServiceImpl.runTheCheck()` is invoked. It queries `m_entity_datatable_check` for rows matching `entity` + `status_enum`, then for each match queries the datatable for rows with the entity FK. If no rows exist, it throws `DatatableEntryRequiredException`.
 
 ### `GenericResultsetData`
 
@@ -78,30 +81,79 @@ The universal query result wrapper returned by `GenericDataServiceImpl.fillGener
 // fineract-core/.../dataqueries/data/GenericResultsetData.java
 public final class GenericResultsetData {
     List<ResultsetColumnHeaderData> columnHeaders; // column metadata
-    List<ResultsetRowData>          data;          // rows (List of List<String>)
+    List<ResultsetRowData>          data;          // rows of string values
 }
 ```
 
-`ResultsetColumnHeaderData` carries: `columnName`, `columnType` (`JdbcJavaType`), `columnLength`, `isColumnNullable`, `isColumnPrimaryKey`, `isColumnUnique`, `isColumnIndexed`, `columnValues` (for Dropdown/code columns), `columnCode`.
+`ResultsetColumnHeaderData` carries: `columnName`, `columnType` (`JdbcJavaType`), `columnLength`, `isColumnNullable`, `isColumnPrimaryKey`, `isColumnUnique`, `isColumnIndexed`, `columnValues` (for Dropdown/code columns), `columnCode`. It also exposes a `columnDisplayType` field (derived from `JdbcJavaType`) used to drive the UI rendering hint.
+
+### `DatatableReadService` / `DatatableWriteService` Interfaces
+
+Both interfaces live in `fineract-core/.../dataqueries/service/`. Key method signatures:
+
+```java
+// DatatableReadService
+List<DatatableData> retrieveDatatableNames(String appTable);
+DatatableData retrieveDatatable(String datatable);
+GenericResultsetData retrieveDataTableGenericResultSet(String datatable, Long appTableId, String order, Long id);
+List<JsonObject> queryDataTable(String datatable, String columnName, String columnValue, String resultColumns);
+Page<JsonObject> queryDataTableAdvanced(String datatable, PagedLocalRequest<AdvancedQueryData> pagedRequest);
+Long countDatatableEntries(String datatableName, Long appTableId, String foreignKeyColumn);
+
+// DatatableWriteService
+void registerDatatable(JsonCommand command);
+void registerDatatable(String dataTableName, String applicationTableName, String entitySubType);
+void deregisterDatatable(String datatable);
+CommandProcessingResult createDatatable(JsonCommand command);
+void updateDatatable(String datatableName, JsonCommand command);
+void deleteDatatable(String datatableName);
+CommandProcessingResult createNewDatatableEntry(String datatable, Long appTableId, JsonCommand command);
+CommandProcessingResult updateDatatableEntryOneToOne(String datatable, Long appTableId, JsonCommand command);
+CommandProcessingResult updateDatatableEntryOneToMany(String datatable, Long appTableId, Long datatableId, JsonCommand command);
+CommandProcessingResult deleteDatatableEntries(String datatable, Long appTableId, JsonCommand command);
+CommandProcessingResult deleteDatatableEntry(String datatable, Long appTableId, Long datatableId, JsonCommand command);
+CommandProcessingResult createPPIEntry(String datatable, Long appTableId, JsonCommand command);
+```
+
+### `StatusEnum` Values
+
+`fineract-core/.../dataqueries/data/StatusEnum.java` defines all valid integer values for `m_entity_datatable_check.status_enum`:
+
+| Enum Constant | Integer Value | Meaning |
+|---------------|---------------|---------|
+| `CREATE` | 100 | Entity created (pending) |
+| `APPROVE` | 200 | Entity approved |
+| `ACTIVATE` | 300 | Entity activated |
+| `WITHDRAWN` | 400 | Application withdrawn |
+| `REJECTED` | 500 | Application rejected |
+| `CLOSE` | 600 | Entity closed |
+| `WRITE_OFF` | 601 | Loan written off |
+| `RESCHEDULE` | 602 | Loan rescheduled |
+| `OVERPAY` | 700 | Loan overpaid |
+| `DISBURSE` | 800 | Loan disbursed |
 
 ### `EntityTables` Enum
 
-`fineract-core/.../dataqueries/data/EntityTables.java` enumerates all valid `apptableName` values and their foreign-key column names:
+`fineract-core/.../dataqueries/data/EntityTables.java` enumerates all valid `apptableName` values and their foreign-key column names. The `Supported Check Statuses` column shows which `StatusEnum` integers can be used in `m_entity_datatable_check.status_enum` for that entity; blank = checks not supported.
 
-| Enum Value | DB Table | FK Column |
-|------------|----------|-----------|
-| `CLIENT` | `m_client` | `client_id` |
-| `GROUP` | `m_group` | `group_id` |
-| `CENTER` | `m_center` / `m_group` | `center_id` |
-| `OFFICE` | `m_office` | `office_id` |
-| `LOAN` | `m_loan` | `loan_id` |
-| `LOAN_PRODUCT` | `m_product_loan` | `product_loan_id` |
-| `SAVINGS` | `m_savings_account` | `savings_account_id` |
-| `SAVINGS_PRODUCT` | `m_savings_product` | `savings_product_id` |
-| `SAVINGS_TRANSACTION` | `m_savings_account_transaction` | `savings_transaction_id` |
-| `SHARE_PRODUCT` | `m_share_product` | `share_product_id` |
-| `WC_LOAN_PRODUCT` | `m_wc_loan_product` | `wc_product_loan_id` |
-| `WC_LOAN` | `m_wc_loan` | `wc_loan_id` |
+| Enum Value | DB Table (`name`) | FK Column on Datatable | Supported Check Statuses |
+|------------|-------------------|------------------------|--------------------------|
+| `CLIENT` | `m_client` | `client_id` | CREATE(100), ACTIVATE(300), CLOSE(600) |
+| `GROUP` | `m_group` | `group_id` | CREATE(100), ACTIVATE(300), CLOSE(600) |
+| `CENTER` | `m_center` (apptable: `m_group`) | `center_id` | *(none)* |
+| `OFFICE` | `m_office` | `office_id` | *(none)* |
+| `LOAN_PRODUCT` | `m_product_loan` | `product_loan_id` | *(none)* |
+| `LOAN` | `m_loan` | `loan_id` | CREATE(100), APPROVE(200), DISBURSE(800), WITHDRAWN(400), REJECTED(500), WRITE_OFF(601) |
+| `SAVINGS_PRODUCT` | `m_savings_product` | `savings_product_id` | *(none)* |
+| `SAVINGS` | `m_savings_account` | `savings_account_id` | CREATE(100), APPROVE(200), ACTIVATE(300), WITHDRAWN(400), REJECTED(500), CLOSE(600) |
+| `SAVINGS_TRANSACTION` | `m_savings_account_transaction` | `savings_transaction_id` | *(none)* |
+| `SHARE_PRODUCT` | `m_share_product` | `share_product_id` | *(none)* |
+| `WC_LOAN_PRODUCT` | `m_wc_loan_product` | `wc_product_loan_id` | *(none)* |
+| `WC_LOAN` | `m_wc_loan` | `wc_loan_id` | *(none)* |
+
+<Note>
+`CENTER` uses a four-argument constructor: `CENTER("m_center", "m_group", "center_id", "id")`. Its `apptableName` is `m_group` (the parent table for API lookups) while the actual database table is `m_center`. The FK column on any linked datatable is `center_id`.
+</Note>
 
 ---
 
@@ -137,6 +189,21 @@ public final class GenericResultsetData {
 | `POST` | `/v1/entityDatatableChecks` | Create a new check rule. Mandatory: `entity`, `status`, `datatableName`. Optional: `productId`. |
 | `DELETE` | `/v1/entityDatatableChecks/{entityDatatableCheckId}` | Delete a check rule. |
 
+### `/v1/adhocquery` — `AdHocApiResource`
+
+The `AdHocApiResource` lives in `fineract-provider/.../adhocquery/api/` and manages saved ad-hoc SQL queries stored in `m_adhoc`. These are distinct from `stretchy_report` entries — they are intended for scheduled SQL execution with email delivery rather than on-demand reporting.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/adhocquery` | List all ad-hoc queries. |
+| `GET` | `/v1/adhocquery/template` | Retrieve creation template. |
+| `GET` | `/v1/adhocquery/{adHocId}` | Retrieve one ad-hoc query by ID. |
+| `POST` | `/v1/adhocquery` | Create a new ad-hoc query. Fields: `name`, `query`, `tableName`, `tableField`, `email`, `reportRunFrequency`, `isActive`. |
+| `PUT` | `/v1/adhocquery/{adHocId}` | Update an existing ad-hoc query. |
+| `DELETE` | `/v1/adhocquery/{adHocId}` | Delete an ad-hoc query. |
+
+The `AdHoc` entity (`m_adhoc`) stores: `name` (max 100), `query` (SQL, max 2000), `tableName` (max 100), `tableFields` (max 2000), `email` (max 500), `reportRunFrequency` (FK → `ReportRunFrequency`), `isActive`.
+
 ---
 
 ## Datatable Column Types
@@ -149,13 +216,13 @@ When creating a datatable via `POST /v1/datatables`, the `columns` array accepts
 | `Date` | `DATE` | |
 | `DateTime` | `DATETIME` | |
 | `Decimal` | `DECIMAL(19,6)` | |
-| `Dropdown` | `INT` (FK → `m_code_value`) | Requires `code` field. Column name becomes `code_cd_<name>`. |
+| `Dropdown` | `INT` (FK → `m_code_value`) | Requires `code` field. Column name becomes `<code>_cd_<columnName>`. |
 | `Number` | `BIGINT` | |
 | `String` | `VARCHAR(length)` | Requires `length` field. |
 | `Text` | `TEXT` | |
 
 <Note>
-Dropdown columns store the code-value ID (integer). The column name is automatically suffixed: `code_cd_<columnName>`. The corresponding code value label is resolved by joining `m_code_value` at query time via `GenericDataServiceImpl.fillResultsetColumnHeaders()`.
+Dropdown columns store the code-value ID (integer). The actual DB column name is computed as `<code>_cd_<columnName>` by `DatatableWriteServiceImpl.datatableColumnNameToCodeValueName()`. For example, a column named `gender` with `code = "Gender"` becomes `Gender_cd_gender`. The corresponding code value label is resolved by joining `m_code_value` at query time via `GenericDataServiceImpl.fillResultsetColumnHeaders()`.
 </Note>
 
 ---
@@ -199,6 +266,8 @@ When any lifecycle command fires (loan approval, disbursement, etc.), `EntityDat
 2. For each matching row, queries the datatable for rows with the entity FK.
 3. If no rows exist, throws `DatatableEntryRequiredException`.
 
+For product-scoped checks (e.g. a loan with a specific `productId`), `runTheCheckForProduct()` additionally filters by `product_id`.
+
 ---
 
 ## Report Entity (`stretchy_report`)
@@ -209,12 +278,12 @@ The `Report` domain entity in `Report.java` maps to table `stretchy_report`:
 |--------|------|-------|
 | `report_name` | `VARCHAR(100)` | Unique |
 | `report_type` | `VARCHAR` | Must be one of the registered report types (`Table`, `Chart`, `SMS`, `Pentaho`) |
-| `report_subtype` | `VARCHAR(20)` | Required when `report_type=Chart`; must be `Bar` or `Pie` |
+| `report_subtype` | `VARCHAR(20)` | Required when `report_type=Chart`; must be `Bar` or `Pie`. Must be blank for non-Chart types. |
 | `report_category` | `VARCHAR(45)` | Optional grouping |
 | `description` | `TEXT` | |
 | `core_report` | `TINYINT(1)` | Seeded reports; only `use_report` can be updated |
 | `use_report` | `TINYINT(1)` | Controls visibility in reference UI |
-| `report_sql` | `TEXT` | Required for `Table` and `Chart` types; forbidden for `Pentaho` |
+| `report_sql` | `TEXT` | Required for `Table` and `Chart` types; must be blank for `Pentaho` and `SMS` |
 
 The `Report` entity cascades `ReportParameterUsage` (join table `stretchy_report_param_usage`). `ReportParameter` (table `stretchy_report_parameter`) holds the parameter catalogue.
 
@@ -266,7 +335,7 @@ Write operations use `CREATE_<name>`, `UPDATE_<name>`, `DELETE_<name>` permissio
 </Warning>
 
 <Warning>
-**Dropdown columns are renamed.** When you declare a column of type `Dropdown` with `name = "gender"`, the actual DB column becomes `gender_cd_gender` — the prefix `code_cd_` is applied by `DatatableWriteServiceImpl`. API requests must use the suffixed name.
+**Dropdown columns are renamed.** When you declare a column of type `Dropdown` with `name = "gender"` and `code = "Gender"`, the actual DB column becomes `Gender_cd_gender` — the formula is `<code>_cd_<columnName>`, applied by `DatatableWriteServiceImpl.datatableColumnNameToCodeValueName()`. API requests must use the suffixed name.
 </Warning>
 
 <Note>

@@ -19,7 +19,7 @@ Fineract's two-factor authentication (2FA) subsystem adds an OTP-based second fa
 | `fineract-security/…/domain/TFAccessTokenRepository.java` | `org.apache.fineract.infrastructure.security.domain` | Spring Data JPA repository for `TFAccessToken` |
 | `fineract-security/…/domain/TwoFactorConfiguration.java` | `org.apache.fineract.infrastructure.security.domain` | JPA entity for per-key 2FA configuration values |
 | `fineract-security/…/domain/TwoFactorConfigurationRepository.java` | `org.apache.fineract.infrastructure.security.domain` | Spring Data JPA repository for `TwoFactorConfiguration` |
-| `fineract-security/…/domain/OTPRequestRepository.java` | `org.apache.fineract.infrastructure.security.domain` | Spring Data JPA repository for in-flight OTP requests |
+| `fineract-security/…/domain/OTPRequestRepository.java` | `org.apache.fineract.infrastructure.security.domain` | In-memory `@Repository` backed by a `ConcurrentHashMap<Long, OTPRequest>` keyed by `AppUser.getId()`; **not** a JPA repository — OTP requests are never persisted to the database |
 | `fineract-security/…/data/OTPRequest.java` | `org.apache.fineract.infrastructure.security.data` | Data object carrying the raw OTP token and its metadata |
 | `fineract-security/…/data/OTPMetadata.java` | `org.apache.fineract.infrastructure.security.data` | Metadata about an OTP: request time, TTL, delivery method used |
 | `fineract-security/…/data/OTPDeliveryMethod.java` | `org.apache.fineract.infrastructure.security.data` | Name + target for a delivery method (e.g., `sms` / user's phone number) |
@@ -46,7 +46,7 @@ The master switch is in `fineract-provider/src/main/resources/application.proper
 fineract.security.2fa.enabled=${FINERACT_SECURITY_2FA_ENABLED:false}
 ```
 
-All runtime values are stored in the `m_configuration` table (or a dedicated 2FA config table) and are read via `TwoFactorConfigurationService`. Constants are defined in `TwoFactorConfigurationConstants`:
+All runtime values are stored in the **`twofactor_configuration`** table (a dedicated 2FA key-value table, not `m_configuration`) and are read via `TwoFactorConfigurationService`. The JPA entity is `TwoFactorConfiguration` (`@Table(name = "twofactor_configuration")`). Constants are defined in `TwoFactorConfigurationConstants`:
 
 | Constant | Config key string | Type | Description |
 |----------|------------------|------|-------------|
@@ -128,6 +128,26 @@ public interface TFAccessTokenRepository extends JpaRepository<TFAccessToken, Lo
 ```
 
 The `findByUserAndToken` query is the primary lookup used by `TwoFactorAuthenticationFilter` to validate incoming tokens.
+
+### `OTPRequestRepository`
+**File:** `fineract-security/src/main/java/org/apache/fineract/infrastructure/security/domain/OTPRequestRepository.java`
+
+Unlike `TFAccessTokenRepository`, this is **not** a Spring Data JPA repository. It is a plain `@Repository`-annotated Spring bean backed by an in-memory `ConcurrentHashMap`:
+
+```java
+@Repository
+@ConditionalOnProperty("fineract.security.2fa.enabled")
+public class OTPRequestRepository {
+
+    private static final ConcurrentHashMap<Long, OTPRequest> OTT_REQUESTS = new ConcurrentHashMap<>();
+
+    public OTPRequest getOTPRequestForUser(AppUser user) { ... }
+    public void addOTPRequest(AppUser user, OTPRequest request) { ... }
+    public void deleteOTPRequestForUser(AppUser user) { ... }
+}
+```
+
+OTP requests are keyed by `AppUser.getId()` and held **only in application memory** — they are not persisted to any database table. This means pending OTPs are lost on application restart. In a multi-node deployment, all requests for a given user must route to the same node, or a distributed cache must be substituted.
 
 ### `TwoFactorAuthenticationFilter`
 **File:** `fineract-security/src/main/java/org/apache/fineract/infrastructure/security/filter/TwoFactorAuthenticationFilter.java`
@@ -342,4 +362,8 @@ Defined in `TwoFactorConstants.BYPASS_TWO_FACTOR_PERMISSION = "BYPASS_TWOFACTOR"
 
 <Accordion title="TFAccessToken uniqueness constraint">
 The unique constraint is on `(token, appuser_id)`. A single user can theoretically hold multiple valid access tokens (e.g., from different devices/sessions) as long as the token strings differ. Token generation uses `UUIDAccessTokenGenerationService` which produces 32-char UUIDs — collision probability is negligible.
+</Accordion>
+
+<Accordion title="OTP requests are in-memory only — not persisted">
+`OTPRequestRepository` is backed by a `ConcurrentHashMap`, not a database table. In-flight OTP codes are lost on application restart or JVM crash. In clustered deployments, sticky sessions are required so that the `POST /v1/twofactor/validate?token=...` call reaches the same node that stored the OTP. This is different from `TFAccessToken`, which is persisted to `twofactor_access_token` and is safe for multi-node deployments.
 </Accordion>

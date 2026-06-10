@@ -227,6 +227,7 @@ public class SmsCampaign extends AbstractPersistableCustom<Long> {
     LocalDateTime lastTriggerDate; // Column: "last_trigger_date"
     LocalDateTime recurrenceStartDate; // Column: "recurrence_start_date"
     boolean isVisible;             // Column: "is_visible"
+    boolean isNotification;        // Column: "is_notification" (true → deliver via GCM push, not SMS gateway)
 }
 ```
 

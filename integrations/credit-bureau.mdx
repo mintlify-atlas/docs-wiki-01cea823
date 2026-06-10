@@ -136,13 +136,14 @@ public class CreditBureauConfiguration extends AbstractPersistableCustom<Long> {
 
 | Enum Value | Meaning |
 |-----------|---------|
-| `Username` | API username credential |
-| `Password` | API password credential |
-| `SubscriberCode` | Bureau subscriber/client code |
-| `TokenURL` | Auth token endpoint URL |
-| `CreditReportURL` | Credit report fetch URL |
-| `AddCreditReportURL` | Credit report upload URL |
-| `SearchURL` | Borrower search endpoint URL |
+| `THITSAWORKS` | Identifies the ThitsaWorks bureau implementation |
+| `SUBSCRIPTIONID` | Bureau subscription/client ID |
+| `SUBSCRIPTIONKEY` | Bureau subscription key |
+| `USERNAME` | API username credential |
+| `PASSWORD` | API password credential |
+| `TOKENURL` | Auth token endpoint URL |
+| `SEARCHURL` | Borrower search endpoint URL |
+| `CREDITREPORTURL` | Credit report fetch URL |
 
 ### `CreditBureauLoanProductMapping` (`m_creditbureau_loanproduct_mapping`)
 
@@ -246,13 +247,13 @@ Uses **OkHttp3** (`OkHttpClient`) for all bureau HTTP calls. The integration flo
 
 <Steps>
   <Step title="Read configuration">
-    Loads `CreditBureauConfiguration` rows for the bureau (from `m_creditbureau_configuration`). Configuration keys are defined in `CreditBureauConfigurations` enum: `Username`, `Password`, `SubscriberCode`, `TokenURL`, `CreditReportURL`, etc.
+    Loads `CreditBureauConfiguration` rows for the bureau (from `m_creditbureau_configuration`). Configuration keys are defined in `CreditBureauConfigurations` enum: `USERNAME`, `PASSWORD`, `SUBSCRIPTIONID`, `SUBSCRIPTIONKEY`, `TOKENURL`, `CREDITREPORTURL`, etc.
   </Step>
   <Step title="Obtain bearer token">
     Checks `TokenRepository` for a cached, non-expired `CreditBureauToken`. If expired or absent, makes an HTTP `POST` to `TokenURL` with form-encoded `username` + `password`, parses the response via `CreditBureauTokenCommandFromApiJsonDeserializer`, and saves a new `CreditBureauToken` to DB.
   </Step>
   <Step title="Fetch or upload report">
-    For report fetch: `POST` to `CreditReportURL` with `SubscriberCode` + national ID. For upload: multipart `POST` to `AddCreditReportURL`.
+    For report fetch: `POST` to `CREDITREPORTURL` with `SUBSCRIPTIONID`/`SUBSCRIPTIONKEY` + national ID. For upload: multipart `POST` to the bureau's report upload endpoint.
   </Step>
   <Step title="Parse and return">
     Parses the JSON bureau response using Gson into `CreditBureauReportData`. Returns to `GetCreditReportCommandHandler`, which wraps in `CommandProcessingResult`.

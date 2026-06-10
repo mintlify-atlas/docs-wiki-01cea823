@@ -120,7 +120,7 @@ The Batch API (`POST /api/v1/batches`) allows multiple logical HTTP requests to 
   </Card>
 </CardGroup>
 
-`CommandStrategyProvider` maintains a `ConcurrentHashMap<String, CommandStrategy>` keyed by `METHOD:URL_PATTERN`. It resolves the correct strategy on each batch sub-request.
+`CommandStrategyProvider` maintains a `ConcurrentHashMap<CommandContext, String>` where `CommandContext` holds the `resource` URL pattern and `method`, and the map value is the Spring bean name of the `CommandStrategy`. It resolves the correct strategy on each batch sub-request by calling `applicationContext.getBean(beanName, CommandStrategy.class)`.
 
 Selected `CommandStrategy` implementations:
 
@@ -144,7 +144,7 @@ JSON Path dependency resolution: if a batch sub-request body or URL contains `$.
 
 Provider-level command handlers live in `fineract-provider/src/main/java/org/apache/fineract/*/handler/`. Each handler implements the legacy `NewCommandSourceHandler` interface (in `fineract-core/commands/`) and is tied to a specific `CommandWrapper.actionName()` + entity type.
 
-`PortfolioCommandSourceWritePlatformServiceImpl` (`fineract-core/src/main/java/org/apache/fineract/commands/service/`) is the legacy entry-point. It calls `CommandProcessingService.processAndLogCommand` which in turn resolves the correct `NewCommandSourceHandler` via Spring context, executes it, and persists the result in `m_portfolio_command_source`.
+`PortfolioCommandSourceWritePlatformServiceImpl` (`fineract-core/src/main/java/org/apache/fineract/commands/service/`) is the legacy entry-point. It calls `CommandProcessingService.executeCommand` which resolves the correct `NewCommandSourceHandler` via Spring context bean lookup, calls `handler.processCommand(command)`, and persists the result in `m_portfolio_command_source`.
 
 ---
 
@@ -176,9 +176,9 @@ Domain-specific Avro serializers live at `fineract-provider/src/main/java/org/ap
 
 Each serializer implements `BusinessEventSerializer`:
 ```java
-Class<? extends ByteBufferSerializable> getSupportedSchema();
-ByteBufferSerializable toAvroDTO(BusinessEvent<T> event);
-boolean canSerialize(BusinessEvent<?> event);
+boolean canSerialize(BusinessEvent<T> event);
+Class<? extends GenericContainer> getSupportedSchema();
+ByteBufferSerializable toAvroDTO(BusinessEvent<T> rawEvent);
 ```
 
 `BusinessEventSerializerFactory` iterates all registered serializers, calls `canSerialize`, and returns the first match.

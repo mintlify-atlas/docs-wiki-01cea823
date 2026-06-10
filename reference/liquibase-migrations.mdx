@@ -1,7 +1,7 @@
 ---
 title: "Liquibase Migrations: Full Schema History"
 sidebarTitle: "Liquibase Migrations"
-description: "Deep reference for Fineract's Liquibase migration architecture: all 236 tenant changesets, 12 tenant-store migrations, dual-DB contexts, and startup execution model."
+description: "Reference for Fineract's Liquibase architecture: 236 tenant changesets, 13 tenant-store migrations, dual-database contexts, and startup execution model."
 ---
 
 Apache Fineract replaces the legacy Flyway tool with Liquibase for all schema management. Migrations run automatically at application startup via `TenantDatabaseUpgradeService`, which upgrades both the **tenant store** (the registry database) and each **individual tenant** database. This page covers every migration file, the include hierarchy, multi-database contexts, and the naming conventions for adding new migrations.
@@ -137,7 +137,7 @@ initial-switch-changelog-tenant-store.xml
    └─ parts/0002_initial_data.xml
 
 changelog-tenant-store.xml
-   └─ parts/0003 through 0012
+   └─ parts/0003 through 0012 (plus 0007_x_extend_tenant_ro_passwords.xml)
 ```
 
 ---
@@ -401,7 +401,7 @@ changelog-tenant-store.xml
 
 ---
 
-## Tenant Store Migration Files (12 total)
+## Tenant Store Migration Files (13 total)
 
 The tenant store DB holds the multi-tenancy registry: connection details, tenant identifiers, and OIDC configuration.
 

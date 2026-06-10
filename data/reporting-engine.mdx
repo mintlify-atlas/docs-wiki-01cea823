@@ -1,7 +1,7 @@
 ---
 title: "Reporting Engine: Reports, Mailing & MIX Market"
 sidebarTitle: "Reporting Engine"
-description: "Architecture of Fineract's reporting engine: ReportingProcessService SPI, @ReportService annotation, report execution via RunreportsApiResource, scheduled email delivery, and MIX Market XBRL reporting."
+description: "Fineract's @ReportService SPI, RunreportsApiResource endpoints, stretchy_report columns, ReportMailingJob fields, S3 export, and MIX Market XBRL reporting."
 ---
 
 Fineract's reporting engine is a provider-based SPI that routes report execution requests to pluggable implementations. The central dispatcher — `ReportingProcessServiceProvider` — discovers all Spring beans annotated with `@ReportService` at startup, registers them by type string, and returns the correct provider when `RunreportsApiResource` receives a `GET /v1/runreports/{reportName}` call. The built-in `DatatableReportingProcessService` handles the `Table`, `Chart`, and `SMS` types using raw SQL from `stretchy_report`. An optional Pentaho provider can be added to handle the `Pentaho` type. Scheduled delivery is handled by `ReportMailingJobApiResource` and the `ReportMailingJob` entity. MIX Market reporting lives in the `fineract-mix` module and generates XBRL XML output.
@@ -203,7 +203,8 @@ sequenceDiagram
 | `previous_run_datetime` | `previousRunDateTime` | |
 | `next_run_datetime` | `nextRunDateTime` | |
 | `previous_run_status` | `previousRunStatus` | |
-| `previous_run_error_log` | `previousRunErrorLog` | |
+| `previous_run_error_log` | `previousRunErrorLog` | Full error stack trace |
+| `previous_run_error_message` | `previousRunErrorMessage` | Short error summary message |
 | `number_of_runs` | `numberOfRuns` | Incremented each execution |
 | `is_active` | `isActive` | |
 | `is_deleted` | `isDeleted` | Soft-delete flag |
@@ -244,8 +245,8 @@ The `fineract-mix` module generates XBRL-formatted XML for MIX Market microfinan
 |--------|------|-------------|
 | `GET` | `/v1/mixreport` | Returns XBRL XML. Params: `startDate`, `endDate`, `currency`. |
 | `GET` | `/v1/mixtaxonomy` | List XBRL taxonomy elements (`MixTaxonomyApiResource`). |
-| `GET` | `/v1/mixtaxonomymapping` | List GL → taxonomy mappings. |
-| `PUT` | `/v1/mixtaxonomymapping` | Batch-update mappings (`MixTaxonomyMappingUpdateCommand`). |
+| `GET` | `/v1/mixmapping` | List GL → taxonomy mappings. |
+| `PUT` | `/v1/mixmapping` | Batch-update mappings (`MixTaxonomyMappingUpdateCommand`). |
 
 ---
 

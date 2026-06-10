@@ -1,17 +1,17 @@
 ---
-title: "Fineract E2E Cucumber Test Framework Reference"
+title: "Fineract E2E Cucumber Tests: Architecture and Usage"
 sidebarTitle: "E2E Cucumber Tests"
-description: "Architecture of fineract-e2e-tests-core and fineract-e2e-tests-runner: feature files, step definitions, initializer lifecycle, FineractFeignClient usage, and tag-based filtering."
+description: "Architecture of the e2e-tests-core and e2e-tests-runner modules: feature files, step definitions, initializer lifecycle, and tag-based scenario filtering."
 ---
 
-Apache Fineract's E2E test suite is built on Cucumber 7 with Spring Boot test context. It consists of two Gradle modules: `fineract-e2e-tests-core` (shared step definitions and infrastructure) and `fineract-e2e-tests-runner` (feature files, test runner, and environment-specific initializers). Together they provide 100+ feature files covering the complete loan lifecycle, savings, COB, asset externalization, EMI calculations, and more.
+Apache Fineract's E2E test suite is built on Cucumber 7 with Spring Boot test context. It consists of two Gradle modules: `fineract-e2e-tests-core` (shared step definitions and infrastructure) and `fineract-e2e-tests-runner` (feature files, test runner, and environment-specific initializers). Together they provide 108 feature files covering the complete loan lifecycle, savings, COB, asset externalization, EMI calculations, and more.
 
 ## Module Responsibilities
 
 <CardGroup cols={2}>
   <Card title="fineract-e2e-tests-core" icon="puzzle-piece">
     **Shared infrastructure** consumed by the runner and custom module tests:
-    - 47 step definition classes (`*StepDef.java`)
+    - 47 step definition classes (`*StepDef.java`) plus 5 hook classes
     - Initializer SPIs (`FineractGlobalInitializerStep`, `FineractSuiteInitializerStep`, `FineractScenarioInitializerStep`)
     - `FineractInitializer` orchestrator
     - `FineractFeignClient` configuration
@@ -97,6 +97,12 @@ cucumber.glue=org.apache.fineract.test
 cucumber.execution.parallel.enabled=false
 cucumber.execution.parallel.config.strategy=fixed
 cucumber.execution.parallel.config.fixed.parallelism=3
+cucumber.execution.parallel.config.fixed.max-pool-size=3
+junit.jupiter.execution.parallel.config.fixed.parallelism=3
+junit.jupiter.execution.parallel.enabled=false
+junit.jupiter.execution.parallel.config.strategy=fixed
+cucumber.plugin=pretty
+cucumber.glue=org.apache.fineract.test
 cucumber.filter.tags=not @Skip
 cucumber.execution.exclusive-resources.isolated.read-write=...GLOBAL_KEY
 cucumber.execution.execution-mode.feature=same_thread
@@ -191,6 +197,7 @@ All live in `fineract-e2e-tests-runner/src/test/java/org/apache/fineract/test/in
 
 ```java
 @Configuration
+@Slf4j
 @RequiredArgsConstructor
 public class FineractClientConfiguration {
 
@@ -198,20 +205,29 @@ public class FineractClientConfiguration {
 
     @Bean
     public FineractFeignClient fineractFeignClient() {
+        String baseUrl = apiProperties.getBaseUrl();
+        String username = apiProperties.getUsername();
+        String password = apiProperties.getPassword();
+        String tenantId = apiProperties.getTenantId();
+        long readTimeout = apiProperties.getReadTimeout();
+        String apiBaseUrl = baseUrl + "/fineract-provider/api/";
+        boolean debugEnabled = Boolean.parseBoolean(
+            System.getProperty("fineract.feign.debug", "false"));
+
         return FineractFeignClient.builder()
-            .baseUrl(apiProperties.getBaseUrl() + "/fineract-provider/api/")
-            .credentials(apiProperties.getUsername(), apiProperties.getPassword())
-            .tenantId(apiProperties.getTenantId())
+            .baseUrl(apiBaseUrl)
+            .credentials(username, password)
+            .tenantId(tenantId)
             .disableSslVerification(true)
-            .debug(Boolean.parseBoolean(System.getProperty("fineract.feign.debug", "false")))
+            .debug(debugEnabled)
             .connectTimeout(60, TimeUnit.SECONDS)
-            .readTimeout((int) apiProperties.getReadTimeout(), TimeUnit.SECONDS)
+            .readTimeout((int) readTimeout, TimeUnit.SECONDS)
             .build();
     }
 }
 ```
 
-`ApiProperties` (`fineract-e2e-tests-core/src/test/java/org/apache/fineract/test/api/ApiProperties.java`) reads `fineract-test.api.*` properties via `@Value`. The `FineractFeignClient` class is from `fineract-client-feign`.
+`ApiProperties` (`fineract-e2e-tests-core/src/test/java/org/apache/fineract/test/api/ApiProperties.java`) reads `fineract-test.api.*` properties. The `FineractFeignClient` class is from `fineract-client-feign`.
 
 Enable Feign debug logging: `-Dfineract.feign.debug=true`.
 
@@ -219,30 +235,43 @@ Enable Feign debug logging: `-Dfineract.feign.debug=true`.
 
 ## Step Definition Inventory
 
-Step definitions live in `fineract-e2e-tests-core/src/test/java/org/apache/fineract/test/stepdef/`. There are 47 classes:
+Step definitions live in `fineract-e2e-tests-core/src/test/java/org/apache/fineract/test/stepdef/`. There are 47 `*StepDef.java` classes plus 5 hook classes in the `hook/` sub-package.
 
-### Loan Step Definitions
+### Loan Step Definitions (`stepdef/loan/`)
 
-| Class | Package | Covered Steps |
-|---|---|---|
-| `LoanStepDef.java` | `stepdef.loan` | Loan create/approve/disburse/repay/close, status assertions, schedule validation |
-| `LoanRepaymentStepDef.java` | `stepdef.loan` | Repayment transactions, advance payments |
-| `LoanChargeStepDef.java` | `stepdef.loan` | Charge creation, waiver, reversal |
-| `LoanChargeBackStepDef.java` | `stepdef.loan` | Chargeback operations |
-| `LoanChargeAdjustmentStepDef.java` | `stepdef.loan` | Charge adjustment |
-| `LoanDelinquencyStepDef.java` | `stepdef.loan` | Delinquency bucket assertions |
-| `LoanCOBStepDef.java` | `stepdef.loan` | COB job trigger, business date advance, inline COB |
-| `InlineCOBStepDef.java` | `stepdef.loan` | Inline COB execution via API |
-| `LoanOriginationStepDef.java` | `stepdef.loan` | Loan origination workflow |
-| `LoanReAgingStepDef.java` | `stepdef.loan` | Re-aging operations |
-| `LoanReAmortizationStepDef.java` | `stepdef.loan` | Re-amortization operations |
-| `LoanRescheduleStepDef.java` | `stepdef.loan` | Loan reschedule request |
-| `LoanReprocessStepDef.java` | `stepdef.loan` | Transaction reprocessing |
-| `LoanInterestPauseStepDef.java` | `stepdef.loan` | Interest pause periods |
-| `LoanCapitalizedIncomeStepDef.java` | `stepdef.loan` | Capitalized income handling |
-| `LoanOverrideFieldsStepDef.java` | `stepdef.loan` | Override fields on loan |
+| Class | Covered Steps |
+|---|---|
+| `LoanStepDef.java` | Loan create/approve/disburse/repay/close, status assertions, schedule validation |
+| `LoanRepaymentStepDef.java` | Repayment transactions, advance payments |
+| `ChargeStepDef.java` | Charge product creation and configuration |
+| `LoanChargeStepDef.java` | Loan-level charge creation, waiver, reversal |
+| `LoanChargeBackStepDef.java` | Chargeback operations |
+| `LoanChargeAdjustmentStepDef.java` | Charge adjustment |
+| `LoanDelinquencyStepDef.java` | Delinquency bucket assertions |
+| `LoanCOBStepDef.java` | COB job trigger, business date advance, inline COB |
+| `InlineCOBStepDef.java` | Inline COB execution via API |
+| `LoanOriginationStepDef.java` | Loan origination workflow |
+| `LoanReAgingStepDef.java` | Re-aging operations |
+| `LoanReAmortizationStepDef.java` | Re-amortization operations |
+| `LoanRescheduleStepDef.java` | Loan reschedule request |
+| `LoanReprocessStepDef.java` | Transaction reprocessing |
+| `LoanInterestPauseStepDef.java` | Interest pause periods |
+| `LoanCapitalizedIncomeStepDef.java` | Capitalized income handling |
+| `LoanOverrideFieldsStepDef.java` | Override fields on loan |
+| `WorkingCapitalStepDef.java` | Working capital loan operations |
+| `WorkingCapitalLoanAccountStepDef.java` | Working capital loan account |
+| `WorkingCapitalBreachConfigStepDef.java` | Breach configuration |
+| `WorkingCapitalDelinquencyStepDef.java` | Working capital delinquency |
+| `WorkingCapitalDelinquencyConfigStepDef.java` | Working capital delinquency configuration |
+| `WorkingCapitalDelinquencyRescheduleStepDef.java` | Working capital delinquency reschedule |
+| `WorkingCapitalChargeStepDef.java` | Working capital charges |
+| `WorkingCapitalBatchApiStepDef.java` | Working capital batch API |
+| `WorkingCapitalAmortizationScheduleStepDef.java` | Working capital amortization schedule |
+| `WorkingCapitalBreachScheduleStepDef.java` | Working capital breach schedule |
+| `WorkingCapitalNearBreachConfigStepDef.java` | Near-breach configuration |
+| `WorkingCapitalLoanActionTemplateStepDef.java` | Working capital loan action templates |
 
-### Common Step Definitions
+### Common Step Definitions (`stepdef/common/`)
 
 | Class | Covered Steps |
 |---|---|
@@ -257,26 +286,33 @@ Step definitions live in `fineract-e2e-tests-core/src/test/java/org/apache/finer
 | `OfficeStepDef.java` | Office operations |
 | `SchedulerStepDef.java` | Trigger and await scheduler jobs |
 | `UserStepDef.java` | User management |
+| `WorkingCapitalLoanCobStepDef.java` | Working capital COB operations |
 
 ### Other Step Definitions
 
 | Class | Domain |
 |---|---|
-| `SavingsAccountStepDef.java` | Savings account full lifecycle |
-| `AssetExternalizationStepDef.java` | Loan asset buy/sell transfers |
-| `AccountTransferStepDef.java` | Account-to-account transfers |
-| `DatatablesStepDef.java` | Datatable CRUD |
-| `ReportingStepDef.java` | Report generation and validation |
-| `WorkingCapitalStepDef.java` | Working capital loan operations |
-| `WorkingCapitalLoanAccountStepDef.java` | Working capital loan account |
-| `WorkingCapitalBreachConfigStepDef.java` | Breach configuration |
-| `WorkingCapitalDelinquencyStepDef.java` | Working capital delinquency |
+| `SavingsAccountStepDef.java` (`stepdef/saving/`) | Savings account full lifecycle |
+| `AssetExternalizationStepDef.java` (`stepdef/assetexternalization/`) | Loan asset buy/sell transfers |
+| `AccountTransferStepDef.java` (`stepdef/account/`) | Account-to-account transfers |
+| `DatatablesStepDef.java` (`stepdef/datatable/`) | Datatable CRUD |
+| `ReportingStepDef.java` (`stepdef/reporting/`) | Report generation and validation |
+
+### Hook Classes (`stepdef/hook/`)
+
+| Class | Purpose |
+|---|---|
+| `InitializingHook.java` | Spring context initialization and suite setup |
+| `TestContextLifecycleHook.java` | Clears/restores `TestContext` before/after each scenario |
+| `MessagingHook.java` | JMS connection lifecycle |
+| `TestRailLifecycleHook.java` | TestRail result reporting |
+| `ConnectionPoolDiagnosticsHook.java` | Connection pool diagnostics logging |
 
 ---
 
 ## Feature File Inventory
 
-All feature files live in `fineract-e2e-tests-runner/src/test/resources/features/`:
+All 108 feature files live in `fineract-e2e-tests-runner/src/test/resources/features/`:
 
 <Accordion title="Core Loan Features">
 
@@ -292,7 +328,12 @@ All feature files live in `fineract-e2e-tests-runner/src/test/resources/features
 | `LoanDelinquency-Part1.feature`, `LoanDelinquency-Part2.feature` | Delinquency bucket transitions |
 | `LoanDownPayment-Part1.feature`, `LoanDownPayment-Part2.feature` | Down payment disbursement |
 | `LoanReAging-Part1.feature` through `LoanReAging-Part3.feature` | Re-aging scenarios |
+| `LoanReAgingEqualAmortization-Part1.feature` through `Part3.feature` | Re-aging with equal amortization |
+| `LoanReAgingPreview.feature` | Re-aging preview |
+| `LoanReAgingAccruals.feature` | Accruals after re-aging |
+| `LoanReAgingAccrualsEqualAmortization.feature` | Re-aging accruals with equal amortization |
 | `LoanReAmortization-Part1.feature`, `LoanReAmortization-Part2.feature` | Re-amortization |
+| `LoanReAmortizationPreview.feature` | Re-amortization preview |
 | `LoanAccrualTransaction.feature` | Accrual transaction creation |
 | `LoanAccrualActivity-Part1.feature`, `LoanAccrualActivity-Part2.feature` | Accrual activity tracking |
 | `LoanReschedule.feature` | Loan reschedule |
@@ -324,7 +365,6 @@ All feature files live in `fineract-e2e-tests-runner/src/test/resources/features
 | `0_COB.feature` | COB setup and basic execution (runs first — lexicographic ordering) |
 | `InlineCOB.feature` | Synchronous inline COB via API |
 | `LoanDelayedScheduleCaptures-Part1.feature`, `Part2.feature` | Delayed schedule capture |
-| `LoanReAgingAccruals.feature` | Accruals after re-aging |
 | `LoanReAmortizationAccruals.feature` | Accruals after re-amortization |
 | `WorkingCapital_COB.feature` | Working capital COB |
 
@@ -349,7 +389,38 @@ All feature files live in `fineract-e2e-tests-runner/src/test/resources/features
 
 <Accordion title="Working Capital Features">
 
-Over 25 feature files covering the complete working capital loan system: `WorkingCapitalLoanAccount.feature`, `WorkingCapitalLoanProduct.feature`, `WorkingCapitalLoanRepayment.feature`, `WorkingCapitalDelinquency.feature`, `WorkingCapitalBreachConfiguration.feature`, `WorkingCapitalBreachEvaluation.feature`, `WorkingCapitalDiscount.feature`, `WorkingCapitalDiscountAmortization.feature`, `WorkingCapitalPeriodPaymentRate.feature`, etc.
+Over 30 feature files covering the complete working capital loan system:
+
+| Feature File | Content Summary |
+|---|---|
+| `WorkingCapitalLoanAccount.feature` | Working capital account lifecycle |
+| `WorkingCapitalLoanProduct.feature` | Working capital loan product CRUD |
+| `WorkingCapitalLoanProductAdvancedAccounting.feature` | Advanced accounting for WC products |
+| `WorkingCapitalLoanRepayment.feature` | Repayment flows |
+| `WorkingCapitalLoanRepaymentAccountingEntries.feature` | Accounting entries during repayment |
+| `WorkingCapitalDelinquency.feature` | Delinquency tracking |
+| `WorkingCapitalDelinquencyConfiguration.feature` | Delinquency configuration |
+| `WorkingCapitalDelinquencyPause.feature` | Delinquency pause |
+| `WorkingCapitalDelinquencyReschedule.feature` | Delinquency reschedule |
+| `WorkingCapitalBreachConfiguration.feature` | Breach configuration |
+| `WorkingCapitalBreachEvaluation.feature` | Breach evaluation |
+| `WorkingCapitalBreachSchedule.feature` | Breach schedule |
+| `WorkingCapitalNearBreachConfiguration.feature` | Near-breach configuration |
+| `WorkingCapitalNearBreachEvaluation.feature` | Near-breach evaluation |
+| `WorkingCapitalDiscount.feature` | Discount operations |
+| `WorkingCapitalDiscountAdjustment.feature` | Discount adjustment |
+| `WorkingCapitalDiscountAdjustmentBackdateUndo.feature` | Backdate/undo discount adjustment |
+| `WorkingCapitalDiscountAmortization.feature` | Discount amortization |
+| `WorkingCapitalDiscountAmortizationAdjustment.feature` | Discount amortization adjustment |
+| `WorkingCapitalAmortizationSchedule.feature` | Amortization schedule |
+| `WorkingCapitalPeriodPaymentRate.feature` | Period payment rate |
+| `WorkingCapitalBatchApi.feature` | Batch API for working capital |
+| `WorkingCapitalDatatables.feature` | Datatables for working capital |
+| `WorkingCapitalLoanCharge.feature` | Working capital loan charges |
+| `WorkingCapitalLoanCreditBalanceRefund.feature` | Credit balance refund |
+| `WorkingCapitalLoanGoodwillCredit.feature` | Goodwill credit |
+| `WorkingCapitalLoanGoodwillCreditAccountingEntries.feature` | Goodwill credit accounting |
+| `WorkingCapitalLoanActionTemplates.feature` | Loan action templates |
 
 </Accordion>
 
@@ -358,6 +429,7 @@ Over 25 feature files covering the complete working capital loan system: `Workin
 | Feature File | Content Summary |
 |---|---|
 | `SavingsAccount.feature` | Savings account lifecycle |
+| `AccountTransfer.feature` | Account-to-account transfers |
 | `Client.feature` | Client create, update, close |
 | `BusinessDate.feature` | Business date management |
 | `Configuration.feature` | Global configuration toggles |

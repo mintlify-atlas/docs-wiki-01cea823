@@ -49,7 +49,7 @@ Accrual accounting in Fineract recognises income (interest, fees, penalties) whe
 | `ACCRUAL_UPFRONT` | `4` | `accountingRuleType.accrual.upfront` | ✅ Upfront — all income recognised at disbursement |
 
 Conversion: `AccountingRuleType.fromInt(Integer)` returns the matching constant.  
-Loan products store this as `loan_transaction_strategy_code` indirectly — the value is stored in the loan product and surfaced via `LoanDTO.isPeriodicAccrualBasedAccountingEnabled()` and `LoanDTO.isUpfrontAccrualBasedAccountingEnabled()`.
+Loan products store this value in the `accounting_type` column of `m_product_loan` (mapped to the `LoanProduct.accountingRule` field). It is surfaced at runtime via `LoanDTO.isPeriodicAccrualBasedAccountingEnabled()` and `LoanDTO.isUpfrontAccrualBasedAccountingEnabled()`.
 
 ---
 
@@ -340,9 +340,10 @@ For `accountingRule=3` (`ACCRUAL_PERIODIC`) or `accountingRule=4` (`ACCRUAL_UPFR
 
 **Class:** `org.apache.fineract.accounting.journalentry.service.AccrualBasedAccountingProcessorForSavings`
 
-Savings products can also use accrual accounting. When the savings accounting type is `ACCRUAL_PERIODIC`, the processor handles `SavingsTransactionDTO` events with accrual types by posting:
-- **DEBIT** `INTEREST_PAYABLE` (liability — money owed to the depositor)
-- **CREDIT** `INTEREST_ON_SAVINGS` (expense)
+Savings products can also use accrual accounting. When the savings accounting type is `ACCRUAL_PERIODIC`, the processor handles `SavingsTransactionDTO` events with `isAccrual()` type. The posting direction depends on whether the savings account is in overdraft:
+
+- **Regular savings accrual:** DEBIT `INTEREST_RECEIVABLE`, CREDIT `INCOME_FROM_INTEREST`
+- **Overdraft accrual:** DEBIT `INTEREST_ON_SAVINGS`, CREDIT `INTEREST_PAYABLE`
 
 Selected by `AccountingProcessorForSavingsFactory` based on `SavingsDTO.isAccrualBasedAccountingEnabled()`.
 

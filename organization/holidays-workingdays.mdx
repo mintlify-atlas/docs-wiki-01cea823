@@ -103,7 +103,7 @@ When `RESCHEDULETONEXTREPAYMENTDATE` is chosen, the `repaymentsRescheduledTo` fi
 | `DELETE` | `/v1/holidays/{holidayId}` | — | Soft-delete (status → 600) |
 
 **Response parameters** (from `HOLIDAY_RESPONSE_DATA_PARAMETERS` constant in `HolidayApiConstants`):
-`id`, `name`, `fromDate`, `toDate`, `repaymentsRescheduledTo`, `status`, `processed`, `description`, `offices`
+`id`, `name`, `fromDate`, `toDate`, `repaymentsRescheduledTo`, `status`, `description`, `locale`, `dateFormat`
 
 ---
 
@@ -204,6 +204,7 @@ All methods are `public static`.
 
 ```java
 switch (rescheduleType) {
+    case INVALID:
     case SAME_DAY:              return date;           // No change
     case MOVE_TO_NEXT_WORKING_DAY:
         return getOffSetDateIfNonWorkingDay(date.plusDays(1), nextMeetingDate, workingDays);  // Recursive +1
@@ -211,6 +212,8 @@ switch (rescheduleType) {
         return nextMeetingDate;                        // Use pre-computed next meeting
     case MOVE_TO_PREVIOUS_WORKING_DAY:
         return getOffSetDateIfNonWorkingDay(date.minusDays(1), nextMeetingDate, workingDays); // Recursive -1
+    default:
+        return date;  // MOVE_TO_NEXT_MEETING_DAY(5) also falls here
 }
 ```
 

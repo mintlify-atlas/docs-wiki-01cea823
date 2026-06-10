@@ -1,7 +1,7 @@
 ---
 title: "Loan Ownership Transfer & Investor Module"
 sidebarTitle: "Loan Ownership"
-description: "Deep dive into Apache Fineract's investor module: entities, API endpoints, COB business step, accounting service, Avro events, and transfer lifecycle state machine."
+description: "Apache Fineract investor module: JPA entities, REST API, COB business step, accounting service, Avro events, and the loan ownership transfer state machine."
 ---
 
 The investor module enables Apache Fineract to model **loan portfolio securitization and sale** — the mechanism by which a financial institution transfers economic ownership of a loan (or group of loans) to an external asset owner (investor). Once a loan is externalized, ongoing transaction journal entries are automatically attributed to the new owner. The module is conditionally activated via `fineract.module.investor.enabled` and every bean in the package is guarded by `InvestorModuleIsEnabledCondition`.
@@ -428,14 +428,14 @@ The default sort is `settlementDate DESC`. Results are projected into `SearchedE
 
 `ExternalTransferOwnerData` holds `{ String externalId, Long id }`.  
 `ExternalTransferLoanData` holds `{ Long loanId, String externalId }`.  
-`ExternalTransferDataDetails` holds the seven outstanding-balance `BigDecimal` fields from `ExternalAssetOwnerTransferDetails`.
+`ExternalTransferDataDetails` holds `Long detailsId` plus six `BigDecimal` outstanding-balance fields sourced from `ExternalAssetOwnerTransferDetails`.
 
 ---
 
 ## Loan Product Attributes
 
 **Source:** `fineract-investor/src/main/java/org/apache/fineract/investor/data/attribute/SettlementModelExternalAssetOwnerLoanProductAttribute.java`  
-**Table:** `m_external_asset_owner_loan_product_attributes` (via `ExternalAssetOwnerLoanProductAttributes` entity)
+**Table:** `m_external_asset_owner_loan_product_configurable_attributes` (via `ExternalAssetOwnerLoanProductAttributes` entity)
 
 | Attribute Key | Attribute Value | Effect |
 |---|---|---|
@@ -446,7 +446,7 @@ The default sort is `settlementDate DESC`. Results are projected into `SearchedE
 
 `DelayedSettlementAttributeServiceImpl.isEnabled(loanProductId)` checks whether `SETTLEMENT_MODEL = DELAYED_SETTLEMENT` is set for the product.
 
-The outstanding interest strategy is read from the global configuration key `"asset-externalization-of-non-active-loans"` (via `ConfigurationDomainService.getAssetOwnerTransferOustandingInterestStrategy()`). The two strategies are implemented in `ExternalAssetOwnerTransferOutstandingInterestCalculation`.
+The outstanding interest strategy is read from the global configuration key `"outstanding-interest-calculation-strategy-for-external-asset-transfer"` (via `ConfigurationDomainService.getAssetOwnerTransferOustandingInterestStrategy()`). The two strategies are implemented in `ExternalAssetOwnerTransferOutstandingInterestCalculation`.
 
 ---
 
@@ -456,7 +456,7 @@ The outstanding interest strategy is read from the global configuration key `"as
 |---|---|---|
 | `fineract.module.investor.enabled` | `true` | Master on/off switch. Env: `FINERACT_MODULE_INVESTOR_ENABLED` |
 | Global config: `asset-externalization-of-non-active-loans` | — | When enabled, triggers auto-transfer handling on `LoanStatusChangedBusinessEvent` (closed/overpaid loans) |
-| Global config: outstanding interest strategy | — | `TOTAL_OUTSTANDING_INTEREST` or `PAYABLE_OUTSTANDING_INTEREST` |
+| Global config: `outstanding-interest-calculation-strategy-for-external-asset-transfer` | `TOTAL_OUTSTANDING_INTEREST` | Controls interest calculation during transfer: `TOTAL_OUTSTANDING_INTEREST` (due + not-yet-due + projected) or `PAYABLE_OUTSTANDING_INTEREST` (due + not-yet-due only) |
 | Loan product attribute `SETTLEMENT_MODEL` | `DEFAULT_SETTLEMENT` | Per-product; enables delayed-settlement (intermediary) flow |
 
 `LoanAccountOwnerTransferConfiguration` registers `LoanTransferabilityServiceImpl` as the default `LoanTransferabilityService` using `@ConditionalOnMissingBean`, allowing integrators to supply a custom implementation.
@@ -563,7 +563,7 @@ sequenceDiagram
 </Accordion>
 
 <Accordion title="Loan Product Configuration">
-The `ExternalAssetOwnerLoanProductAttributesApiResource` at `/v1/external-asset-owners/loan-product` manages per-product attributes stored in `m_external_asset_owner_loan_product_attributes`. The `SETTLEMENT_MODEL` attribute gates the intermediary/delayed-settlement code path. Both `DelayedSettlementAttributeServiceImpl` and `ExternalAssetOwnerTransferOutstandingInterestCalculation` read from this table.
+The `ExternalAssetOwnerLoanProductAttributesApiResource` at `/v1/external-asset-owners/loan-product` manages per-product attributes stored in `m_external_asset_owner_loan_product_configurable_attributes`. The `SETTLEMENT_MODEL` attribute gates the intermediary/delayed-settlement code path. `DelayedSettlementAttributeServiceImpl` reads from this table to determine whether delayed settlement is active for a given loan product.
 </Accordion>
 
 <Accordion title="Loan Status Change Handler">

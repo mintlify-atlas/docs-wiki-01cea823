@@ -1,7 +1,7 @@
 ---
 title: "Avro Event Schemas: All 83 External Payloads"
 sidebarTitle: "Avro Schemas"
-description: "Complete reference for Apache Fineract's 83 Avro schemas in fineract-avro-schemas. Covers all domains, envelope records, compilation pipeline, and serialization flow."
+description: "Complete reference for Apache Fineract's 83 Avro schemas. Covers all domains, envelope records, the compilation pipeline, and the full serialization flow."
 ---
 
 Apache Fineract publishes all external business events as Avro-encoded byte payloads. Every schema lives in the Gradle module `fineract-avro-schemas`, under `fineract-avro-schemas/src/main/avro/`, and is compiled to Java source at build time. There is **no external schema registry** — the schema's fully-qualified class name is embedded in the `MessageV1.dataschema` field so consumers can resolve it from the JAR on the classpath.
@@ -101,7 +101,7 @@ These three root-level schemas wrap all event payloads.
 
 ## All 83 Schemas by Domain
 
-### Loan Domain — `loan/v1/` (37 schemas)
+### Loan Domain — `loan/v1/` (39 schemas)
 
 <Accordion title="LoanAccountDataV1 — the primary loan event payload">
 
@@ -155,7 +155,7 @@ Top-level fields: `id`, `accountNo`, `externalId`, `externalOwnerId`, `settlemen
 
 ---
 
-### Savings Domain — `savings/v1/` (11 schemas)
+### Savings Domain — `savings/v1/` (12 schemas)
 
 | Schema File | Record Name | Key Fields |
 |-------------|-------------|------------|

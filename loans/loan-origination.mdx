@@ -60,6 +60,9 @@ The entire module is **conditionally active** — it only registers beans and ex
 | `fineract-loan-origination/.../exception/LoanNotInSubmittedStatusException.java` | Thrown when attach/detach is attempted on a loan not in SUBMITTED status |
 | `fineract-loan-origination/.../exception/LoanOriginatorMappingAlreadyExistsException.java` | Duplicate mapping guard |
 | `fineract-loan-origination/.../exception/LoanOriginatorNotActiveException.java` | Thrown when attaching an INACTIVE/PENDING originator |
+| `fineract-loan-origination/.../exception/LoanOriginatorCreationNotAllowedException.java` | Thrown when originator creation is not permitted |
+| `fineract-loan-origination/.../exception/LoanOriginatorInvalidStatusException.java` | Thrown when status transition is invalid |
+| `fineract-loan-origination/.../exception/LoanOriginatorMappingNotFoundException.java` | 404 when a specific mapping row is not found |
 
 ## Domain Entities
 

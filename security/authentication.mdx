@@ -48,16 +48,17 @@ extends BasicAuthenticationFilter
 
 The single most important filter for Basic auth. Runs before any Spring Security authentication decision. Its `doFilterInternal` method:
 
-1. Reads `Fineract-Platform-TenantId` header (constant `TENANT_ID_REQUEST_HEADER = "Fineract-Platform-TenantId"`).
-2. Falls back to query parameter `tenantIdentifier` if the header is absent.
-3. Throws `InvalidTenantIdentifierException` (HTTP 400) if neither is found and `EXCEPTION_IF_HEADER_MISSING = true`.
+1. Calls `ThreadLocalContextUtil.reset()` immediately at entry to clear any stale thread-local state from a previous request.
+2. Reads `Fineract-Platform-TenantId` header (constant `TENANT_ID_REQUEST_HEADER = "Fineract-Platform-TenantId"`). Falls back to query parameter `tenantIdentifier` when the header value is blank (checked via `StringUtils.isBlank`).
+3. Throws `InvalidTenantIdentifierException` (HTTP 400) if the resolved identifier is still `null` and `EXCEPTION_IF_HEADER_MISSING = true` (hardcoded `true`).
 4. Calls `AuthTenantDetailsService.loadTenantById(tenantIdentifier, isReportRequest)` to resolve `FineractPlatformTenant`.
-5. Stores the tenant in `ThreadLocalContextUtil.setTenant(tenant)`.
-6. Caches the raw `Authorization: Basic ...` token in `ThreadLocalContextUtil.setAuthToken(...)`.
-7. Delegates to `super.doFilterInternal(...)` which performs the actual Basic credential extraction and `AuthenticationManager` call.
-8. On successful authentication, checks `UserNotificationService.hasUnreadUserNotifications()` and adds `X-Notification-Refresh` response header.
-9. On `InvalidTenantIdentifierException`, clears `SecurityContextHolder` and sends `HTTP 400`.
-10. Always calls `ThreadLocalContextUtil.reset()` in `finally`.
+5. Stores the tenant in `ThreadLocalContextUtil.setTenant(tenant)` and loads business dates via `ThreadLocalContextUtil.setBusinessDates(...)`.
+6. Caches the raw `Authorization: Basic ...` token in `ThreadLocalContextUtil.setAuthToken(...)` (the `"Basic "` prefix is stripped before storing).
+7. On the very first real request (`FIRST_REQUEST_PROCESSED == false`), derives `baseUrl`, toggles ehcache mode, and sets the flag to `true`.
+8. Delegates to `super.doFilterInternal(...)` which performs the actual Basic credential extraction and `AuthenticationManager` call.
+9. On successful authentication (`onSuccessfulAuthentication`), **always** adds the `X-Notification-Refresh` header — set to `"true"` if the user has unread notifications, `"false"` otherwise.
+10. On `InvalidTenantIdentifierException`, clears `SecurityContextHolder` and sends `HTTP 400`.
+11. Always calls `ThreadLocalContextUtil.reset()` in the `finally` block.
 
 <Note>
 OPTIONS requests are allowed through without authentication to support CORS preflight from AJAX clients. The `FIRST_REQUEST_PROCESSED` static flag triggers cache mode initialization once on the very first real request.
@@ -295,11 +296,13 @@ public PasswordEncoder passwordEncoder() {
 
 `LoginAttemptEventListener` (`fineract-provider/.../service/LoginAttemptEventListener.java`) listens to Spring Security's `AbstractAuthenticationFailureEvent`:
 
-1. Checks `ConfigurationDomainService.isMaxLoginRetriesEnabled()` and `retrieveMaxLoginRetries()`.
-2. Calls `AppUser.registerFailedLoginAttempt(maxRetries)`.
-3. Inside `registerFailedLoginAttempt`, if `loginRetryLimitEnabled == true` and `failedLoginAttempts >= maxRetries`, sets `accountNonLocked = false`.
-4. Saves the user and evicts `users` and `usersByUsername` caches.
-5. On `AuthenticationSuccessEvent`, resets `failedLoginAttempts` to 0.
+1. Checks `ConfigurationDomainService.isMaxLoginRetriesEnabled()` — returns early if the global retry limit is disabled.
+2. Returns early if the `maxRetries` value is `null` or `<= 0`, or if the failure event has no username.
+3. Returns early if the event exception is `LockedException` (already locked — avoid double increment).
+4. Loads the user via `AppUserRepository.findAppUserByName(username)`. Returns early if user not found, already locked, or `loginRetryLimitEnabled == false` on the user.
+5. Calls `AppUser.registerFailedLoginAttempt(maxRetries)`. Inside this method: if `this.loginRetryLimitEnabled == false` it returns immediately (no-op); otherwise increments `failedLoginAttempts` and sets `accountNonLocked = false` once `failedLoginAttempts >= maxRetries`.
+6. Saves the user via `AppUserRepository.saveAndFlush()` and clears the `users` and `usersByUsername` caches.
+7. On `AuthenticationSuccessEvent`: if `failedLoginAttempts > 0`, calls `AppUser.resetFailedLoginAttempts()` (sets to `0`) and saves.
 
 <Warning>
 The system user (`AppUserConstants.SYSTEM_USER_NAME`) is never subject to login retry locking — `resolveLoginRetryLimitEnabled()` always returns `false` for the system user, enforced in both `AppUser.updateLoginRetryLimitEnabled()` and `AppUser.fromJson()`.
