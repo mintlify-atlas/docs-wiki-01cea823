@@ -1,0 +1,327 @@
+---
+title: "Fineract Core Module: Infrastructure Deep Dive"
+sidebarTitle: "Fineract Core"
+description: "Complete reference for the fineract-core module: infrastructure subsystems, BusinessDate, cache, configuration, bulk import, validation, and shared utilities."
+---
+
+The `fineract-core` module is the platform's shared infrastructure library. It provides every cross-cutting subsystem — data routing, tenant context, business dates, global configuration, cache management, event abstractions, security utilities, and bulk-import SPIs — that all other modules (fineract-provider, fineract-loan, fineract-savings, …) import. Nothing in fineract-core depends on any domain module; the dependency arrow always points inward.
+
+<Info>
+`fineract-core` compiles to a plain JAR, not an executable. It is assembled into a runnable application only by **fineract-provider**. Keep infrastructure-only code here and domain-specific code in domain modules.
+</Info>
+
+## Module boundary: what belongs here vs fineract-provider
+
+| Criterion | fineract-core | fineract-provider |
+|---|---|---|
+| Shared by ≥2 domain modules | ✅ | ❌ |
+| Spring Boot `@SpringBootApplication` entry point | ❌ | ✅ |
+| Jersey/JAX-RS `ResourceConfig` registration | ❌ | ✅ |
+| HikariCP connection pool wiring | ✅ (factory helpers) | ✅ (final beans) |
+| Liquibase runner | ❌ | ✅ |
+| Domain entity (Loan, Savings, Client…) | ❌ | ✅ |
+| Business event domain types (e.g. `LoanCreatedBusinessEvent`) | ❌ | ✅ |
+
+---
+
+## File inventory
+
+| Package path (relative to `fineract-core/src/main/java/org/apache/fineract/`) | Key class(es) | Role |
+|---|---|---|
+| `infrastructure/core/domain/FineractPlatformTenant` | `FineractPlatformTenant`, `FineractPlatformTenantConnection` | Tenant identity + DB connection descriptor |
+| `infrastructure/core/service/ThreadLocalContextUtil` | `ThreadLocalContextUtil` | Thread-local carrier for tenant, business dates, auth token |
+| `infrastructure/core/service/database/RoutingDataSource` | `RoutingDataSource` | Primary `DataSource` bean; routes per-request to correct tenant pool |
+| `infrastructure/core/service/database/DataSourcePerTenantServiceFactory` | `DataSourcePerTenantServiceFactory` | Builds per-tenant HikariCP pools |
+| `infrastructure/core/service/tenant/TenantDetailsService` | `TenantDetailsService`, `JdbcTenantDetailsService` | Loads `FineractPlatformTenant` from `fineract_tenants` DB |
+| `infrastructure/core/config/FineractProperties` | `FineractProperties` | Root `@ConfigurationProperties(prefix="fineract")` POJO |
+| `infrastructure/core/boot/FineractProfiles` | `FineractProfiles` | Spring profile constants |
+| `infrastructure/core/api/JsonCommand` | `JsonCommand` | Immutable command wrapper holding parsed JSON body + path variables |
+| `infrastructure/core/data/CommandProcessingResult` | `CommandProcessingResult`, `CommandProcessingResultBuilder` | Write-op result DTO |
+| `infrastructure/businessdate/` | `BusinessDate`, `BusinessDateType`, `BusinessDateReadPlatformService` | Business/COB date management |
+| `infrastructure/cache/` | `CacheApiResource`, `PlatformCache`, `RuntimeDelegatingCacheManager` | Dynamic cache type switching |
+| `infrastructure/configuration/` | `GlobalConfigurationProperty`, `ConfigurationDomainService` | Per-tenant named flags & values (table `c_configuration`) |
+| `infrastructure/codes/` | `Code`, `CodeValue`, `CodeReadPlatformService` | Enumeration lookup tables |
+| `infrastructure/dataqueries/` | `ReadWriteNonCoreDataService` | Dynamic datatable (extra-column) support |
+| `infrastructure/documentmanagement/` | `DocumentManagementService` | File attachment storage abstraction |
+| `infrastructure/event/business/` | `BusinessEvent<T>`, `BusinessEventNotifierService` | In-process domain event bus |
+| `infrastructure/event/external/` | `ExternalEvent`, `ExternalEventService`, `ExternalEventProducer` | Persisted outbox + Kafka/JMS publisher |
+| `infrastructure/hooks/event/` | `HookEventSource` | Webhook dispatch |
+| `infrastructure/instancemode/filter/` | `FineractInstanceModeApiFilter` | Rejects API calls that contradict `fineract.mode.*` |
+| `infrastructure/jobs/` | `JobName`, `SchedulerJobRunnerReadService` | Scheduler job metadata |
+| `infrastructure/security/service/` | `PlatformSecurityContext`, `TwoFactorService` | Auth context helpers |
+| `infrastructure/springbatch/` | Spring Batch config helpers | Partition/chunk configuration |
+| `infrastructure/bulkimport/service/` | `BulkImportWorkbookPopulatorService`, `BulkImportWorkbookService` | Bulk-import SPI |
+| `commands/domain/` | `CommandProcessingResultType`, `CommandWrapper`, `CommandSource` | Legacy command domain |
+| `commands/service/PortfolioCommandSourceWritePlatformServiceImpl` | `PortfolioCommandSourceWritePlatformServiceImpl` | Legacy command entry-point |
+
+---
+
+## Key abstractions
+
+### `ThreadLocalContextUtil`
+**File:** `infrastructure/core/service/ThreadLocalContextUtil.java`
+
+Carries five thread-local variables for the duration of a single request:
+
+```java
+ThreadLocal<FineractPlatformTenant>              tenantContext
+ThreadLocal<String>                               contextHolder       // "tenants" or per-tenant identifier
+ThreadLocal<String>                               authTokenContext
+ThreadLocal<HashMap<BusinessDateType, LocalDate>> businessDateContext
+ThreadLocal<ActionContext>                        actionContext
+```
+
+Key static methods:
+- `setTenant(FineractPlatformTenant)` — called by `TenantAwareBasicAuthenticationFilter` on every request.
+- `getBusinessDate()` — delegates to `getActionContext().getBusinessDateType()`, then `getBusinessDateByType(type)`.
+- `init(FineractContext)` — bulk-sets all five variables from a serialisable `FineractContext` snapshot (used when propagating context to async worker threads).
+- `reset()` — must be called at the end of every request (or in `finally`) to prevent context leaks across pooled threads.
+
+### `FineractPlatformTenant`
+**File:** `infrastructure/core/domain/FineractPlatformTenant.java`
+
+```java
+@Jacksonized @Builder
+public class FineractPlatformTenant implements Serializable {
+    Long id;
+    String tenantIdentifier;
+    String name;
+    String timezoneId;
+    FineractPlatformTenantConnection connection;
+}
+```
+
+`FineractPlatformTenantConnection` (same package) stores every HikariCP pool parameter: `schemaServer`, `schemaServerPort`, `schemaName`, `schemaUsername`, `schemaPassword`, `maxActive`, `initialSize`, read-only replicas (`readOnlySchemaServer` etc.), and `masterPasswordHash` for encrypted passwords.
+
+### `RoutingDataSource`
+**File:** `infrastructure/core/service/database/RoutingDataSource.java`
+
+Spring-primary `DataSource` bean (`@Service("dataSource") @Primary`). On every `getConnection()` call it delegates to `RoutingDataSourceServiceFactory.determineDataSourceService().retrieveDataSource()`.
+
+`RoutingDataSourceServiceFactory` reads `ThreadLocalContextUtil.getDataSourceContext()` to decide which service to use:
+- `"tenants"` → `dataSourceForTenants` (the master `fineract_tenants` pool)
+- anything else → `tomcatJdbcDataSourcePerTenantService` (per-tenant pool built by `DataSourcePerTenantServiceFactory`)
+
+`DataSourcePerTenantServiceFactory.createNewDataSourceFor(tenant, connection)` builds a fresh HikariCP pool with validated master password, respects `fineract.tenant.config.*` overrides, and registers Micrometer metrics.
+
+---
+
+## BusinessDate subsystem
+
+The business-date system allows operations to run against a logical date independent of wall-clock time — essential for COB (Close of Business) batch processing.
+
+### `BusinessDateType` enum
+**File:** `infrastructure/businessdate/domain/BusinessDateType.java`
+
+| Value | id | description |
+|---|---|---|
+| `BUSINESS_DATE` | 1 | Regular business date (used by most operations) |
+| `COB_DATE` | 2 | Close of Business date (used by COB batch) |
+
+### `BusinessDate` entity
+**File:** `infrastructure/businessdate/domain/BusinessDate.java`
+
+JPA entity mapped to table `m_business_date`. Has a `@UniqueConstraint` on `type` so only one record per `BusinessDateType` exists per tenant.
+
+```java
+@Table(name = "m_business_date")
+public class BusinessDate extends AbstractAuditableWithUTCDateTimeCustom<Long> {
+    BusinessDateType type;
+    LocalDate date;
+    @Version Long version;  // optimistic locking
+}
+```
+
+### `BusinessDateReadPlatformService`
+**File:** `infrastructure/businessdate/service/BusinessDateReadPlatformService.java`
+
+```java
+public interface BusinessDateReadPlatformService {
+    List<BusinessDateDTO> findAll();
+    BusinessDateDTO findByType(String type);
+    HashMap<BusinessDateType, LocalDate> getBusinessDates();
+}
+```
+
+`getBusinessDates()` is called by `TenantAwareBasicAuthenticationFilter` at the start of every request. The resulting `HashMap<BusinessDateType, LocalDate>` is loaded into `ThreadLocalContextUtil.businessDateContext` for the lifetime of the thread.
+
+### BusinessDate flow
+
+<Steps>
+  <Step title="Request arrives">
+    `TenantAwareBasicAuthenticationFilter.doFilterInternal` reads the `Fineract-Platform-TenantId` header.
+  </Step>
+  <Step title="Tenant loaded">
+    `TenantDetailsService.loadTenantById` queries `fineract_tenants` DB. `ThreadLocalContextUtil.setTenant` stores it.
+  </Step>
+  <Step title="Business dates loaded">
+    `BusinessDateReadPlatformService.getBusinessDates()` queries `m_business_date` for this tenant. `ThreadLocalContextUtil.setBusinessDates` stores the map.
+  </Step>
+  <Step title="Domain code reads date">
+    Any service calls `ThreadLocalContextUtil.getBusinessDate()` → `actionContext.getBusinessDateType()` → map lookup.
+  </Step>
+  <Step title="BusinessDate update">
+    `BusinessDateApiResource` → `BusinessDateUpdateHandler` → `BusinessDateWritePlatformServiceImpl.updateBusinessDate` saves to `m_business_date` and fires a `BusinessDateChangedEvent`.
+  </Step>
+</Steps>
+
+<Warning>
+Business dates are loaded once per thread at filter time. If you spawn a new thread inside a service method you **must** call `ThreadLocalContextUtil.init(context)` with a snapshot captured before forking, or the child thread will throw `NullPointerException` on any `getBusinessDate()` call.
+</Warning>
+
+---
+
+## Cache management
+
+### `PlatformCache` entity
+**File:** `infrastructure/cache/domain/PlatformCache.java` — mapped to table `c_cache`. Stores the active cache type per tenant.
+
+### `CacheType` enum
+**File:** `infrastructure/cache/domain/CacheType.java` — values: `NO_CACHE`, `SINGLE_NODE`, `MULTI_NODE`.
+
+### `RuntimeDelegatingCacheManager`
+**File:** `infrastructure/cache/service/RuntimeDelegatingCacheManager.java` — Spring `CacheManager` implementation that delegates to the cache implementation selected at runtime (none / Ehcache single-node / Hazelcast multi-node). Switches dynamically via `CacheWritePlatformService.switchToCache`.
+
+### `CacheApiResource`
+**File:** `infrastructure/cache/api/CacheApiResource.java` — JAX-RS resource at `GET/PUT /api/v1/caches`. `PUT` triggers `CacheSwitchCommandHandler` which persists the new type in `c_cache` and calls `RuntimeDelegatingCacheManager.switchToCache`.
+
+---
+
+## Global Configuration
+
+Named key-value flags stored per tenant in table **`c_configuration`**. Domain services read these flags via `ConfigurationDomainService`.
+
+### `GlobalConfigurationProperty`
+**File:** `infrastructure/configuration/domain/GlobalConfigurationProperty.java`
+
+```java
+@Entity @Table(name = "c_configuration")
+public class GlobalConfigurationProperty extends AbstractPersistableCustom<Long> {
+    String name;
+    boolean enabled;
+    Long value;           // numeric value (e.g. penalty wait period in days)
+    LocalDate dateValue;
+    String stringValue;
+    String description;
+    boolean isTrapDoor;   // cannot be changed via API once set
+}
+```
+
+### Selected `GlobalConfigurationConstants`
+**File:** `infrastructure/configuration/api/GlobalConfigurationConstants.java`
+
+| Constant | Key |
+|---|---|
+| `MAKER_CHECKER` | `"maker-checker"` |
+| `RESCHEDULE_FUTURE_REPAYMENTS` | `"reschedule-future-repayments"` |
+| `ALLOW_TRANSACTIONS_ON_HOLIDAY` | `"allow-transactions-on-holiday"` |
+| `PENALTY_WAIT_PERIOD` | `"penalty-wait-period"` |
+| `FORCE_PASSWORD_RESET_DAYS` | `"force-password-reset-days"` |
+| `FINANCIAL_YEAR_BEGINNING_MONTH` | `"financial-year-beginning-month"` |
+| `ROUNDING_MODE` | `"rounding-mode"` |
+| `ORGANISATION_START_DATE` | `"organisation-start-date"` |
+| `CUSTOM_ACCOUNT_NUMBER_LENGTH` | `"custom-account-number-length"` |
+| `IS_INTEREST_TO_BE_RECOVERED_FIRST_WHEN_GREATER_THAN_EMI` | `"is-interest-to-be-recovered-first-when-greater-than-emi"` |
+
+---
+
+## Bulk Import SPI
+
+The bulk-import subsystem allows operators to upload Excel workbooks to create/update entities en masse.
+
+### `BulkImportWorkbookPopulatorService`
+**File:** `infrastructure/bulkimport/service/BulkImportWorkbookPopulatorService.java`
+
+```java
+public interface BulkImportWorkbookPopulatorService {
+    Response getTemplate(String entityType, Long officeId, Long staffId, String dateFormat);
+}
+```
+
+Implementations in `fineract-provider` under `infrastructure/bulkimport/populator/` return a pre-populated XLSX template per entity type (client, loan, savings, group, staff, etc.).
+
+### `BulkImportWorkbookService`
+**File:** `infrastructure/bulkimport/service/BulkImportWorkbookService.java`
+
+```java
+public interface BulkImportWorkbookService {
+    Long importWorkbook(String entityType, InputStream inputStream,
+                        FormDataContentDisposition fileDetail, String locale, String dateFormat);
+    Collection<ImportData> getImports(GlobalEntityType type);
+    ImportData getImport(Long id);
+}
+```
+
+`GlobalEntityType` enum (`infrastructure/bulkimport/data/GlobalEntityType.java`) lists all importable types: `CLIENTS`, `LOANS`, `LOAN_REPAYMENTS`, `SAVINGS`, `SAVINGS_TRANSACTIONS`, `GROUPS`, `CENTERS`, `CHART_OF_ACCOUNTS`, `STAFF`, `OFFICES`, `USERS`, `GUARANTORS`, `JOURNAL_ENTRIES`, `SHARED_ACCOUNTS`, `FIXED_DEPOSITS`, `FIXED_DEPOSIT_TRANSACTIONS`, `RECURRING_DEPOSITS`, `RECURRING_DEPOSIT_TRANSACTIONS`.
+
+---
+
+## fineract-validation module
+
+The `fineract-validation` module (`fineract-validation/src/main/java/org/apache/fineract/validation/`) provides Jakarta Bean Validation constraints beyond the standard set.
+
+| Annotation | Validator | Validates |
+|---|---|---|
+| `@DateFormat` | `DateFormatValidator` | String is a valid `DateTimeFormatter` pattern |
+| `@EnumValue` | `EnumValueValidator` | String maps to a known enum constant |
+| `@LocalDate` | `LocalDateValidator` | String parses to `java.time.LocalDate` in the given format |
+| `@Locale` | `LocaleValidator` | String is a known Java locale tag |
+
+These are used on incoming API request bodies (Jackson-deserialized POJOs) via Jersey's `ValidationFeature` registered in `JerseyConfig`.
+
+---
+
+## Instance-mode filter
+
+`FineractInstanceModeApiFilter` (`infrastructure/instancemode/filter/FineractInstanceModeApiFilter.java`) is a Spring `OncePerRequestFilter` that rejects HTTP calls that do not match the node's configured operating mode (`fineract.mode.*` properties). For example a read-only node (`readEnabled=true, writeEnabled=false`) rejects POST/PUT/DELETE requests to most endpoints. Exception paths (always allowed regardless of mode): `/v1/batches`, `/v1/instance-mode`, `/v1/jobs`, `/v1/scheduler`, `/v1/loans/catch-up`, actuator endpoints.
+
+---
+
+## `FineractProperties` config root
+
+**File:** `infrastructure/core/config/FineractProperties.java` — `@ConfigurationProperties(prefix="fineract")`.
+
+Top-level nested config classes inside `FineractProperties`:
+
+| Nested class | Prefix | Governs |
+|---|---|---|
+| `FineractTenantProperties` | `fineract.tenant.*` | Master + per-tenant DB connection defaults |
+| `FineractConfigProperties` | `fineract.tenant.config.*` | Pool size / leak detection overrides |
+| `FineractModeProperties` | `fineract.mode.*` | read/write/batchWorker/batchManager flags |
+| `FineractEventsProperties` | `fineract.events.*` | External event publishing |
+| `FineractSecurityProperties` | `fineract.security.*` | Basic auth, OAuth2, CORS, OIDC |
+| `FineractPartitionedJob` | `fineract.partitioned-job.*` | Spring Batch partition config per job |
+| `FineractContentProperties` | `fineract.content.*` | Document storage (filesystem / S3) |
+| `FineractRemoteJobMessageHandlerProperties` | `fineract.remote-job-message-handler.*` | JMS/Kafka job dispatcher |
+
+---
+
+## Key API endpoints exposed by fineract-core
+
+| Endpoint | Class | Notes |
+|---|---|---|
+| `GET/PUT /api/v1/caches` | `CacheApiResource` | Read or switch cache type |
+| `GET/PUT /api/v1/globalconfiguration` | (provider) | Read/update `c_configuration` rows |
+| `GET /api/v1/businessdate` | `BusinessDateApiResource` | Retrieve all business dates |
+| `POST /api/v1/businessdate` | `BusinessDateApiResource` | Update business date |
+| `GET /api/v1/codes`, `GET /api/v1/codes/{id}/codevalues` | (provider) | Code lookup tables |
+
+---
+
+## Gotchas & invariants
+
+<Accordion title="Thread-local cleanup is mandatory">
+`ThreadLocalContextUtil.reset()` must be called in a `finally` block in any code that calls `setTenant`, `setBusinessDates`, etc. In servlet threads this is handled by `TenantAwareBasicAuthenticationFilter`, but manually spawned threads (e.g. `CompletableFuture.supplyAsync`) have **no** automatic cleanup and will silently retain stale tenant context if pooled.
+</Accordion>
+
+<Accordion title="Optimistic locking on BusinessDate">
+`BusinessDate` has a `@Version Long version` field. Concurrent updates to the same date type will throw `ObjectOptimisticLockingFailureException`. The COB batch runner retries on these failures.
+</Accordion>
+
+<Accordion title="GlobalConfigurationProperty trapDoor flag">
+Any `GlobalConfigurationProperty` with `isTrapDoor=true` cannot be changed via the API once set. Attempts throw `GlobalConfigurationException`. Seed data migrations set this for security-sensitive flags.
+</Accordion>
+
+<Accordion title="RoutingDataSource is not AbstractRoutingDataSource">
+Fineract's `RoutingDataSource` extends `AbstractDataSource` (not Spring's `AbstractRoutingDataSource`). It manually delegates to `RoutingDataSourceServiceFactory` on each `getConnection()` call. This means the lookup key is the *current thread's* `ThreadLocalContextUtil.getDataSourceContext()` value, not a Spring-managed lookup key. Never swap the data source context inside an active transaction.
+</Accordion>

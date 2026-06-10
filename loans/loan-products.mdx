@@ -1,0 +1,342 @@
+---
+title: "Loan Products: Configuration, Enums & Validation"
+sidebarTitle: "Loan Products"
+description: "Complete reference for Apache Fineract loan products: LoanProduct entity fields, LoanProductRelatedDetail, all enum types, borrower-cycle variations, configurable attributes, and API endpoints."
+---
+
+Loan products in Apache Fineract serve as blueprints for individual loan accounts. Every `Loan` embeds a reference to a `LoanProduct` (`m_product_loan`) and, at creation time, copies the product's `LoanProductRelatedDetail` into its own `loanRepaymentScheduleDetail` embedded object. This copy-on-create design means product changes do not retroactively alter existing loans; only the product's `m_product_loan` row changes. The product controls interest method, amortisation, repayment frequency, grace periods, days-in-year convention, fee and penalty charges, accounting rule type, GL account mappings, and — for progressive-loan products — payment allocation rules.
+
+---
+
+## File Inventory
+
+| File | Path | Role |
+|---|---|---|
+| `LoanProduct.java` | `fineract-loan/src/main/java/org/apache/fineract/portfolio/loanproduct/domain/LoanProduct.java` | Aggregate root; table `m_product_loan` |
+| `LoanProductRelatedDetail.java` | `fineract-loan/.../loanproduct/domain/LoanProductRelatedDetail.java` | `@Embeddable` holding all calculation parameters |
+| `LoanProductMinMaxConstraints.java` | `fineract-loan/.../loanproduct/domain/LoanProductMinMaxConstraints.java` | Min/max bounds for principal, rate, repayments |
+| `LoanProductBorrowerCycleVariations.java` | `fineract-loan/.../loanproduct/domain/LoanProductBorrowerCycleVariations.java` | Per-cycle term overrides; `m_product_loan_variations_borrower_cycle` |
+| `LoanProductConfigurableAttributes.java` | `fineract-loan/.../loanproduct/domain/LoanProductConfigurableAttributes.java` | Flags for which fields can be overridden at account level |
+| `LoanProductInterestRecalculationDetails.java` | `fineract-loan/.../loanproduct/domain/LoanProductInterestRecalculationDetails.java` | Interest recalculation config |
+| `LoanProductTrancheDetails.java` | `fineract-loan/.../loanproduct/domain/LoanProductTrancheDetails.java` | Multi-tranche disbursement config |
+| `LoanProductGuaranteeDetails.java` | `fineract-loan/.../loanproduct/domain/LoanProductGuaranteeDetails.java` | Guarantee fund configuration |
+| `LoanProductFloatingRates.java` | `fineract-loan/.../loanproduct/domain/LoanProductFloatingRates.java` | Linked floating rate reference |
+| `InterestMethod.java` | `fineract-loan/.../loanproduct/domain/InterestMethod.java` | Enum: DECLINING_BALANCE, FLAT |
+| `AmortizationMethod.java` | `fineract-loan/.../loanproduct/domain/AmortizationMethod.java` | Enum: EQUAL_PRINCIPAL, EQUAL_INSTALLMENTS |
+| `InterestCalculationPeriodMethod.java` | `fineract-loan/.../loanproduct/domain/InterestCalculationPeriodMethod.java` | Enum: DAILY, SAME_AS_REPAYMENT_PERIOD |
+| `LoanProductConstants.java` | `fineract-loan/.../loanproduct/LoanProductConstants.java` | All JSON parameter name constants |
+| `LoanProductDataValidator.java` | `fineract-provider/.../loanproduct/serialization/LoanProductDataValidator.java` | Validates create/update requests |
+| `LoanProductsApiResource.java` | `fineract-provider/.../loanproduct/api/LoanProductsApiResource.java` | REST: `@Path("/v1/loanproducts")` |
+| `LoanProductWritePlatformServiceJpaRepositoryImpl.java` | `fineract-provider/.../loanproduct/service/LoanProductWritePlatformServiceJpaRepositoryImpl.java` | JPA write implementation |
+| `LoanProductReadPlatformServiceImpl.java` | `fineract-provider/.../loanproduct/service/LoanProductReadPlatformServiceImpl.java` | JPA read implementation |
+
+---
+
+## API Endpoints
+
+`LoanProductsApiResource` is bound to `@Path("/v1/loanproducts")`.
+
+| Method | Path | Handler | Description |
+|---|---|---|---|
+| `POST` | `/v1/loanproducts` | `createLoanProduct()` | Create a new product; validated by `LoanProductDataValidator.validateForCreate()` |
+| `GET` | `/v1/loanproducts` | `retrieveAllLoanProducts()` | List all products |
+| `GET` | `/v1/loanproducts/template` | `retrieveTemplate()` | UI template with dropdown data |
+| `GET` | `/v1/loanproducts/{productId}` | `retrieveLoanProductDetails()` | Single product detail |
+| `PUT` | `/v1/loanproducts/{productId}` | `updateLoanProduct()` | Full update; validated by `LoanProductDataValidator.validateForUpdate()` |
+| `GET` | `/v1/loanproducts/external-id/{externalProductId}` | `retrieveLoanProductDetails()` | Lookup by external ID |
+| `PUT` | `/v1/loanproducts/external-id/{externalProductId}` | `updateLoanProduct()` | Update by external ID |
+
+---
+
+## LoanProduct Entity Fields
+
+Table: `m_product_loan`. Annotated `@Entity` in `fineract-loan/.../loanproduct/domain/LoanProduct.java`.
+
+<Tabs>
+  <Tab title="Core Identity Fields">
+| Java field | DB column | Description |
+|---|---|---|
+| `name` | `name` | Unique product name |
+| `shortName` | `short_name` | Unique short code |
+| `description` | `description` | Narrative description |
+| `externalId` | `external_id` | External UUID |
+| `fund` | `fund_id` | Default funding source |
+| `startDate` | `start_date` | Product activation date |
+| `closeDate` | `close_date` | Product deactivation date |
+| `accountingRule` | `accounting_type` | `AccountingRuleType`: NONE, CASH, ACCRUAL_PERIODIC, ACCRUAL_UPFRONT |
+| `transactionProcessingStrategyCode` | `loan_transaction_strategy_code` | Default repayment strategy code |
+  </Tab>
+  <Tab title="Configuration Flags">
+| Java field | DB column | Description |
+|---|---|---|
+| `includeInBorrowerCycle` | `include_in_borrower_cycle` | Count toward borrower cycle |
+| `useBorrowerCycle` | `use_borrower_cycle` | Apply `borrowerCycleVariations` |
+| `holdGuaranteeFunds` | `hold_guarantee_funds` | Lock collateral funds |
+| `canDefineInstallmentAmount` | `can_define_fixed_emi_amount` | Allow fixed EMI override |
+| `isLinkedToFloatingInterestRate` | `is_linked_to_floating_interest_rates` | Link to floating rate |
+| `allowVariabeInstallments` | `allow_variabe_installments` | Variable installment amounts |
+| `syncExpectedWithDisbursementDate` | `sync_expected_with_disbursement_date` | First repayment anchored to disbursal |
+| `canUseForTopup` | `can_use_for_topup` | Allow top-up loan |
+| `disallowExpectedDisbursements` | `disallow_expected_disbursements` | Block future expected disbursals |
+| `allowApprovedDisbursedAmountsOverApplied` | `allow_approved_disbursed_amounts_over_applied` | Allow over-applied amounts |
+| `overdueDaysForNPA` | `overdue_days_for_npa` | Days overdue before NPA classification |
+| `minimumDaysBetweenDisbursalAndFirstRepayment` | `min_days_between_disbursal_and_first_repayment` | Minimum gap |
+| `accountMovesOutOfNPAOnlyOnArrearsCompletion` | `account_moves_out_of_npa_only_on_arrears_completion` | Strict NPA exit rule |
+| `enableInstallmentLevelDelinquency` | `enable_installment_level_delinquency` | Per-installment delinquency tracking |
+| `principalThresholdForLastInstallment` | `principal_threshold_for_last_installment` | Last installment rounding threshold |
+  </Tab>
+  <Tab title="Delinquency & Repayment Events">
+| Java field | DB column | Description |
+|---|---|---|
+| `delinquencyBucket` | `delinquency_bucket_id` | Linked `DelinquencyBucket` |
+| `dueDaysForRepaymentEvent` | `due_days_for_repayment_event` | Days before due to fire repayment-due event |
+| `overDueDaysForRepaymentEvent` | `overdue_days_for_repayment_event` | Days after due to fire repayment-overdue event |
+| `repaymentStartDateType` | `repayment_start_date_type_enum` | `RepaymentStartDateType`: DISBURSEMENT_DATE or SUBMITTED_ON_DATE |
+  </Tab>
+</Tabs>
+
+---
+
+## LoanProductRelatedDetail (Embedded Object)
+
+`@Embeddable` class at `fineract-loan/.../loanproduct/domain/LoanProductRelatedDetail.java`. This is embedded in **both** `LoanProduct` and `Loan` — the loan gets its own copy at creation time.
+
+| Java field | DB column | Description |
+|---|---|---|
+| `currency` | _(embedded `MonetaryCurrency`)_ | Currency code and precision |
+| `principal` | `principal_amount` | Nominal principal |
+| `nominalInterestRatePerPeriod` | `nominal_interest_rate_per_period` | Rate per period |
+| `interestPeriodFrequencyType` | `interest_period_frequency_enum` | Frequency of rate application |
+| `annualNominalInterestRate` | `annual_nominal_interest_rate` | Annualised rate |
+| `interestMethod` | `interest_method_enum` | `InterestMethod` enum |
+| `interestCalculationPeriodMethod` | `interest_calculated_in_period_enum` | `InterestCalculationPeriodMethod` enum |
+| `allowPartialPeriodInterestCalculation` | `allow_partial_period_interest_calcualtion` | Pro-rata partial periods |
+| `repayEvery` | `repay_every` | Repayment interval |
+| `repaymentPeriodFrequencyType` | `repayment_period_frequency_enum` | Frequency type for repayments |
+| `numberOfRepayments` | `number_of_repayments` | Total number of installments |
+| `graceOnPrincipalPayment` | `grace_on_principal_periods` | Principal-free grace periods |
+| `recurringMoratoriumOnPrincipalPeriods` | `recurring_moratorium_principal_periods` | Recurring principal moratorium |
+| `graceOnInterestPayment` | `grace_on_interest_periods` | Interest-free grace periods |
+| `graceOnInterestCharged` | `grace_interest_free_periods` | Periods where interest is not charged |
+| `amortizationMethod` | `amortization_method_enum` | `AmortizationMethod` enum |
+| `inArrearsTolerance` | `arrearstolerance_amount` | Tolerance amount before arrears flag |
+| `graceOnArrearsAgeing` | `grace_on_arrears_ageing` | Grace periods before arrears ageing |
+| `daysInMonthType` | `days_in_month_enum` | `DaysInMonthType`: ACTUAL or _30_ |
+| `daysInYearType` | `days_in_year_enum` | `DaysInYearType`: ACTUAL, 360, 364, 365 |
+| `isInterestRecalculationEnabled` | `interest_recalculation_enabled` | Enable compound interest recalculation |
+| `isEqualAmortization` | `is_equal_amortization` | Flat equal-installment flag |
+| `enableDownPayment` | `enable_down_payment` | Auto-post down payment on disbursal |
+| `disbursedAmountPercentageForDownPayment` | `disbursed_amount_percentage_for_down_payment` | Down-payment % |
+| `enableAutoRepaymentForDownPayment` | `enable_auto_repayment_for_down_payment` | Auto-post without manual action |
+| `loanScheduleType` | `loan_schedule_type` | `LoanScheduleType`: CUMULATIVE or PROGRESSIVE |
+| `loanScheduleProcessingType` | `loan_schedule_processing_type` | `LoanScheduleProcessingType` |
+| `enableAccrualActivityPosting` | `enable_accrual_activity_posting` | Post accrual-activity transactions |
+| `chargeOffBehaviour` | `charge_off_behaviour` | `LoanChargeOffBehaviour` on charge-off |
+| `interestRecognitionOnDisbursementDate` | `interest_recognition_on_disbursement_date` | Accrue interest from disbursal |
+| `enableIncomeCapitalization` | `enable_income_capitalization` | Capitalize deferred income |
+| `enableBuyDownFee` | `enable_buy_down_fee` | Enable buy-down fee feature |
+
+---
+
+## Enum Reference
+
+### InterestMethod
+
+File: `fineract-loan/.../loanproduct/domain/InterestMethod.java`
+
+| Value | ID | Description |
+|---|---|---|
+| `DECLINING_BALANCE` | 0 | Interest calculated on reducing outstanding balance |
+| `FLAT` | 1 | Interest calculated on original principal throughout |
+| `INVALID` | 2 | Sentinel / error value |
+
+### AmortizationMethod
+
+File: `fineract-loan/.../loanproduct/domain/AmortizationMethod.java`
+
+| Value | ID | Description |
+|---|---|---|
+| `EQUAL_PRINCIPAL` | 0 | Fixed principal per installment; interest declines |
+| `EQUAL_INSTALLMENTS` | 1 | Fixed total installment (EMI); principal portion grows |
+| `INVALID` | 2 | Sentinel / error value |
+
+### InterestCalculationPeriodMethod
+
+File: `fineract-loan/.../loanproduct/domain/InterestCalculationPeriodMethod.java`
+
+| Value | ID | Description |
+|---|---|---|
+| `DAILY` | 0 | Interest calculated on actual daily balance |
+| `SAME_AS_REPAYMENT_PERIOD` | 1 | Interest calculated at repayment period boundaries |
+| `INVALID` | 2 | Sentinel / error value |
+
+---
+
+## All Loan Product Parameters
+
+Key JSON parameter name constants from `LoanProductConstants.java`:
+
+<Accordion title="Principal & Rate Parameters">
+| Constant | JSON Key | Description |
+|---|---|---|
+| `PRINCIPAL` | `principal` | Nominal principal |
+| `MIN_PRINCIPAL` | `minPrincipal` | Minimum allowed principal |
+| `MAX_PRINCIPAL` | `maxPrincipalValue` | Maximum allowed principal |
+| `INTEREST_RATE_PER_PERIOD` | `interestRatePerPeriod` | Rate per period |
+| `MIN_INTEREST_RATE_PER_PERIOD` | `minInterestRatePerPeriod` | Minimum rate |
+| `MAX_INTEREST_RATE_PER_PERIOD` | `maxInterestRatePerPeriod` | Maximum rate |
+| `DAYS_IN_YEAR_TYPE_PARAMETER_NAME` | `daysInYearType` | Day-count convention |
+| `DAYS_IN_MONTH_TYPE_PARAMETER_NAME` | `daysInMonthType` | Month day-count |
+</Accordion>
+
+<Accordion title="Repayment & Grace Parameters">
+| Constant | JSON Key | Description |
+|---|---|---|
+| `NUMBER_OF_REPAYMENTS` | `numberOfRepayments` | Number of installments |
+| `MIN_NUMBER_OF_REPAYMENTS` | `minNumberOfRepayments` | Minimum installments |
+| `MAX_NUMBER_OF_REPAYMENTS` | `maxNumberOfRepayments` | Maximum installments |
+| `repaymentEveryParamName` | `repaymentEvery` | Repayment interval |
+| `graceOnPrincipalAndInterestPaymentParamName` | `graceOnPrincipalAndInterestPayment` | Grace periods |
+| `GRACE_ON_ARREARS_AGEING_PARAMETER_NAME` | `graceOnArrearsAgeing` | Arrears grace |
+| `MINIMUM_DAYS_BETWEEN_DISBURSAL_AND_FIRST_REPAYMENT` | `minimumDaysBetweenDisbursalAndFirstRepayment` | Disbursal gap |
+</Accordion>
+
+<Accordion title="Recalculation Parameters">
+| Constant | JSON Key | Description |
+|---|---|---|
+| `IS_INTEREST_RECALCULATION_ENABLED_PARAMETER_NAME` | `isInterestRecalculationEnabled` | Toggle recalculation |
+| `interestRecalculationCompoundingMethodParameterName` | `interestRecalculationCompoundingMethod` | Compounding method |
+| `rescheduleStrategyMethodParameterName` | `rescheduleStrategyMethod` | Reschedule strategy |
+| `recalculationRestFrequencyTypeParameterName` | `recalculationRestFrequencyType` | Rest frequency |
+| `preClosureInterestCalculationStrategyParamName` | `preClosureInterestCalculationStrategy` | Pre-closure strategy |
+</Accordion>
+
+<Accordion title="Borrower-Cycle Parameters">
+| Constant | JSON Key | Description |
+|---|---|---|
+| `USE_BORROWER_CYCLE_PARAMETER_NAME` | `useBorrowerCycle` | Enable cycle-based variations |
+| `PRINCIPAL_VARIATIONS_FOR_BORROWER_CYCLE_PARAMETER_NAME` | `principalVariationsForBorrowerCycle` | Principal variation array |
+| `INTEREST_RATE_VARIATIONS_FOR_BORROWER_CYCLE_PARAMETER_NAME` | `interestRateVariationsForBorrowerCycle` | Rate variation array |
+| `NUMBER_OF_REPAYMENT_VARIATIONS_FOR_BORROWER_CYCLE_PARAMETER_NAME` | `numberOfRepaymentVariationsForBorrowerCycle` | Repayment variation array |
+| `BORROWER_CYCLE_NUMBER_PARAM_NAME` | `borrowerCycleNumber` | Cycle number |
+| `VALUE_CONDITION_TYPE_PARAM_NAME` | `valueConditionType` | EQUAL / GREATER_THAN |
+</Accordion>
+
+---
+
+## LoanProductBorrowerCycleVariations
+
+Entity: `fineract-loan/.../loanproduct/domain/LoanProductBorrowerCycleVariations.java`. Table: `m_product_loan_variations_borrower_cycle`.
+
+This entity stores per-cycle overrides for three parameters: `principal`, `interestRate`, and `numberOfRepayments`. Each row has:
+
+| Field | Column | Description |
+|---|---|---|
+| `loanProduct` | `loan_product_id` | Parent product |
+| `borrowerCycleNumber` | `borrower_cycle_number` | The cycle this row applies to |
+| `paramType` | `param_type` | `LoanProductParamType` int code (PRINCIPAL=1, INTERESTRATE=2, REPAYMENT=3) |
+| `valueConditionType` | `value_condition` | `LoanProductValueConditionType` (EQUAL=1, GREATERTHAN=2) |
+| `minValue` | `min_value` | Minimum override |
+| `maxValue` | `max_value` | Maximum override |
+| `defaultValue` | `default_value` | Default override |
+
+When `LoanProduct.useBorrowerCycle = true`, the assembler selects the matching row from `borrowerCycleVariations` based on how many previous loans this client has had with this product.
+
+---
+
+## LoanProductConfigurableAttributes
+
+Entity: `fineract-loan/.../loanproduct/domain/LoanProductConfigurableAttributes.java`. Table: `m_product_loan_configurable_attributes`.
+
+Each `Boolean` column is a flag indicating whether the corresponding attribute **may be overridden at account creation time**. If `false`, the loan account must inherit the product value.
+
+| Java field | DB column | JSON key (via `LoanProductConstants`) |
+|---|---|---|
+| `amortizationType` | `amortization_method_enum` | `amortizationType` |
+| `interestType` | `interest_method_enum` | `interestType` |
+| `transactionProcessingStrategyCode` | `loan_transaction_strategy_code` | `transactionProcessingStrategyCode` |
+| `interestCalculationPeriodType` | `interest_calculated_in_period_enum` | `interestCalculationPeriodType` |
+| `inArrearsTolerance` | `arrearstolerance_amount` | `inArrearsTolerance` |
+| `repaymentEvery` | `repay_every` | `repaymentEvery` |
+| `graceOnPrincipalAndInterestPayment` | `moratorium` | `graceOnPrincipalAndInterestPayment` |
+| `graceOnArrearsAgeing` | `grace_on_arrears_ageing` | `graceOnArrearsAgeing` |
+
+<Tip>
+The `allowAttributeOverrides` JSON object (key: `LoanProductConstants.allowAttributeOverridesParamName`) is the container for all eight flags in the create/update request.
+</Tip>
+
+---
+
+## LoanProductDataValidator
+
+Class: `fineract-provider/.../loanproduct/serialization/LoanProductDataValidator.java`.
+
+<Steps>
+  <Step title="Parse JSON">
+    Converts the request body to a `JsonElement` and checks it is not empty — throws `InvalidJsonException` if blank.
+  </Step>
+  <Step title="Validate base fields">
+    Uses `DataValidatorBuilder` to assert required fields (`name`, `shortName`, `currencyCode`, `digitsAfterDecimal`, `principal`, `interestRatePerPeriod`, `numberOfRepayments`, `repaymentEvery`, `repaymentFrequencyType`, `interestType`, `amortizationType`, `loanScheduleType`) and that rates are within bounds.
+  </Step>
+  <Step title="Validate equal-amortization constraints">
+    If `isEqualAmortization = true`, rejects combinations with interest recalculation, floating rates, variable installments, and tranche disbursal — throws `EqualAmortizationUnsupportedFeatureException`.
+  </Step>
+  <Step title="Validate Progressive schedule constraints">
+    If `loanScheduleType = PROGRESSIVE`, enforces that `fixedLength` is only used with zero-interest or advanced payment allocation strategies.
+  </Step>
+  <Step title="Throw accumulated errors">
+    `throwExceptionIfValidationWarningsExist(dataValidationErrors)` throws `PlatformApiDataValidationException` if any errors exist.
+  </Step>
+</Steps>
+
+---
+
+## ProductToGLAccountMapping
+
+Loan products link to GL accounts via `m_product_to_gl_account_mapping`. The `AccountingRuleType` on the product governs which accounts are required:
+
+| Accounting Rule | Required GL Account Types |
+|---|---|
+| `NONE` (0) | None |
+| `CASH_BASED` (1) | Fund Source, Loan Portfolio, Income from Interest, Income from Fees, Losses |
+| `ACCRUAL_PERIODIC` (2) | All cash accounts + Accrual accounts (Interest Receivable, Fee Receivable) |
+| `ACCRUAL_UPFRONT` (3) | All accrual accounts + Deferred Income accounts |
+
+---
+
+## Connections
+
+<CardGroup cols={2}>
+  <Card title="Inbound" icon="arrow-right">
+    - `LoanProductsApiResource` — REST layer
+    - `LoanAssembler` — reads `LoanProduct` when building a `Loan`
+    - Provisioning module — reads `overdueDaysForNPA`
+  </Card>
+  <Card title="Outbound" icon="arrow-left">
+    - `DelinquencyBucket` — product references a bucket via FK
+    - `Charge` — `m_product_loan_charge` join table
+    - `FloatingRate` — `LoanProductFloatingRates`
+    - `m_product_to_gl_account_mapping` — accounting bridge
+    - `LoanProductInterestRecalculationDetails` — compound interest config
+  </Card>
+</CardGroup>
+
+---
+
+## Gotchas & Invariants
+
+<Warning>
+`LoanProductRelatedDetail` is `@Embeddable` and shared between `LoanProduct` and `Loan`. Changes to the product's embedded detail **do not** cascade to existing loan accounts — each loan holds its own copy of the detail from the time of creation.
+</Warning>
+
+<Warning>
+`AmortizationMethod.EQUAL_INSTALLMENTS` (value=1) and `EQUAL_PRINCIPAL` (value=0) are stored using `EnumType.ORDINAL` (not string). If enum values are ever reordered in source code, existing data breaks silently. Do not reorder.
+</Warning>
+
+<Note>
+When `isLinkedToFloatingInterestRate = true`, the interest rate is derived at runtime from `LoanProductFloatingRates` rather than from `nominalInterestRatePerPeriod`. The `LoanProductDataValidator` rejects floating rates combined with equal-amortization.
+</Note>
+
+<Note>
+The `loanScheduleType` field is stored as a `STRING` enum in `loan_schedule_type` column. `CUMULATIVE` is the legacy model; `PROGRESSIVE` enables advanced payment allocation rules (`LoanProductPaymentAllocationRule`) and credit allocation rules (`LoanProductCreditAllocationRule`).
+</Note>

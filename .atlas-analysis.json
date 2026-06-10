@@ -1,24 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "Fineract",
+  "projectType": "api-service",
+  "projectName": "Apache Fineract",
+  "projectDescription": "Apache Fineract is an open-source core banking platform providing a RESTful API foundation for loan management, savings accounts, group lending, and financial services for underserved populations.",
   "theme": "maple",
-  "colors": {
-    "primary": "#c35696",
-    "light": "#1d5e8b",
-    "dark": "#faf6fa"
-  },
-  "favicon": "https://media.brand.dev/cbc27f91-fd3b-452d-89c7-5e7ded5150f3.jpg",
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/apache/fineract"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/apache/fineract"
-    }
-  },
+  "primaryColor": "#c35696",
+  "lightColor": "#1d5e8b",
+  "darkColor": "#faf6fa",
   "navigation": {
     "tabs": [
       {
@@ -170,5 +157,42 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "fineract-provider: Main Spring Boot application entry point (ServerApplication.java) with Jersey REST layer",
+    "fineract-core: Cross-cutting infrastructure — tenancy, events, jobs, caching, bulk import, data queries",
+    "fineract-loan: Loan account lifecycle, transaction processing, delinquency, collateral, interest pauses",
+    "fineract-progressive-loan: Progressive (BNPL-style) repayment schedule engine with pluggable allocators",
+    "fineract-savings: Savings accounts, fixed deposits, recurring deposits, interest posting",
+    "fineract-cob: Close-of-Business batch engine using Spring Batch with partitioned step execution",
+    "fineract-command: CQRS command-dispatch framework with async, JDBC, audit and Disruptor implementations",
+    "fineract-security: Basic auth, OAuth2 resource server, 2FA/OTP, OIDC federation (Keycloak/Azure/Okta)",
+    "fineract-accounting: Double-entry GL, journal entries, accruals, provisioning, product-account mapping",
+    "fineract-investor: Loan ownership transfer / securitization with COB business steps",
+    "fineract-loan-origination: Standalone origination workflow module",
+    "fineract-working-capital-loan: Working capital loan type with dedicated COB steps",
+    "fineract-avro-schemas: Avro schemas for all external event payloads (83 .avsc files)",
+    "fineract-client / fineract-client-feign: Auto-generated OpenAPI Java SDK for API consumers",
+    "Multi-tenancy: Separate DB per tenant, tenant store DB, dynamic DataSource routing",
+    "External events: Kafka and JMS producers for domain events with Avro serialization",
+    "Partitioned COB: Spring Batch remote partitioning over Spring Events, JMS (ActiveMQ), or Kafka",
+    "Liquibase migrations: 236+ tenant changesets + tenant-store changesets for schema evolution"
+  ],
+  "publicApiSurface": [
+    "org.apache.fineract.ServerApplication#main — Spring Boot entry point",
+    "fineract-provider/src/main/resources/application.properties — all fineract.* config keys",
+    "GET/POST /fineract-provider/api/v1/loans — Loan account CRUD and lifecycle actions",
+    "GET/POST /fineract-provider/api/v1/savingsaccounts — Savings account CRUD",
+    "GET/POST /fineract-provider/api/v1/clients — Client CRUD and lifecycle",
+    "GET/POST /fineract-provider/api/v1/groups — Group/center management",
+    "POST /fineract-provider/api/v1/authentication — Basic auth login",
+    "GET /fineract-provider/api/v1/scheduler — Job scheduler control",
+    "GET /fineract-provider/api/v1/jobs — Scheduled job listing and trigger",
+    "POST /fineract-provider/api/v1/batches — Batch API (multiple requests in one HTTP call)",
+    "GET/POST /fineract-provider/api/v1/glaccounts — GL chart of accounts",
+    "GET /fineract-provider/api/v1/journalentries — Journal entry queries",
+    "GET/POST /fineract-provider/api/v1/externaleventsconfigurations — Toggle outbound events per type",
+    "GET /fineract-provider/actuator/health — Spring Actuator health check",
+    "CommandDispatcher#dispatch — core command-bus interface (fineract-command module)"
+  ]
 }

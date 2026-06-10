@@ -1,0 +1,343 @@
+---
+title: "Fineract Configuration Properties Reference Guide"
+sidebarTitle: "Config Properties"
+description: "Exhaustive reference for all fineract.* application.properties keys, their environment variable overrides, defaults, and effects. Covers SSL, tenant DB, security, events, S3, COB, and more."
+---
+
+Apache Fineract centralizes its runtime configuration in `fineract-provider/src/main/resources/application.properties`. Every `fineract.*` key binds to a field in `FineractProperties.java` (in `fineract-core`) via Spring's `@ConfigurationProperties`. All values can be overridden at container or process startup through environment variables (shell-style `UPPER_SNAKE_CASE`), Java system properties (`-Dfineract.key=value`), or Kubernetes/Docker `env:` blocks.
+
+## How Overrides Work
+
+<Steps>
+  <Step title="Environment Variable">
+    Each property exposes a `${ENV_VAR:default}` placeholder. Set the environment variable in Docker Compose `env_file:`, Kubernetes `env:` stanza, or the host shell before launching the JVM.
+  </Step>
+  <Step title="Java System Property">
+    Pass `-Dfineract.server.port=8080` to the JVM (`JAVA_TOOL_OPTIONS` env var is the easiest way inside a container).
+  </Step>
+  <Step title="Additional Properties File">
+    Mount an additional `application-override.properties` and activate it with `SPRING_PROFILES_ACTIVE=override`.
+  </Step>
+</Steps>
+
+---
+
+## Server & SSL
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `server.port` | `FINERACT_SERVER_PORT` | `8443` | HTTPS listener port |
+| `server.servlet.context-path` | `FINERACT_SERVER_SERVLET_CONTEXT_PATH` | `/fineract-provider` | Servlet context path |
+| `server.compression.enabled` | `FINERACT_SERVER_COMPRESSION_ENABLED` | `true` | HTTP response compression |
+| `server.ssl.enabled` | `FINERACT_SERVER_SSL_ENABLED` | `true` | Enable/disable TLS |
+| `server.ssl.protocol` | _(hardcoded)_ | `TLS` | TLS protocol |
+| `server.ssl.key-store` | `FINERACT_SERVER_SSL_KEY_STORE` | `classpath:keystore.jks` | Keystore location |
+| `server.ssl.key-store-password` | `FINERACT_SERVER_SSL_KEY_STORE_PASSWORD` | `openmf` | Keystore password |
+| `server.shutdown` | _(hardcoded)_ | `graceful` | Spring graceful shutdown |
+| `spring.lifecycle.timeout-per-shutdown-phase` | `FINERACT_TIMEOUT_PER_SHUTDOWN` | `30s` | Max wait for in-flight requests |
+| `server.tomcat.threads.max` | `FINERACT_SERVER_TOMCAT_THREADS_MAX` | `200` | Tomcat max worker threads |
+| `server.tomcat.threads.min-spare` | `FINERACT_SERVER_TOMCAT_THREADS_MIN_SPARE` | `10` | Tomcat min spare threads |
+| `server.tomcat.max-connections` | `FINERACT_SERVER_TOMCAT_MAX_CONNECTIONS` | `8192` | Max simultaneous TCP connections |
+| `server.tomcat.accept-count` | `FINERACT_SERVER_TOMCAT_ACCEPT_COUNT` | `100` | Backlog queue size |
+| `server.tomcat.max-keep-alive-requests` | `FINERACT_SERVER_TOMCAT_MAX_KEEP_ALIVE_REQUESTS` | `100` | Max keep-alive requests per connection |
+| `server.tomcat.accesslog.enabled` | `FINERACT_SERVER_TOMCAT_ACCESSLOG_ENABLED` | `false` | Tomcat access log |
+| `server.tomcat.mbeanregistry.enabled` | `FINERACT_SERVER_TOMCAT_MBEANREGISTRY_ENABLED` | `false` | JMX MBean registry |
+| `server.tomcat.max-http-form-post-size` | `FINERACT_SERVER_TOMCAT_MAX_HTTP_FORM_POST_SIZE` | `2MB` | Max HTTP form POST |
+| `fineract.security.hsts.enabled` | `FINERACT_SECURITY_HSTS_ENABLED` | `false` | HTTP Strict-Transport-Security header |
+| `server.forward-headers-strategy` | _(hardcoded)_ | `framework` | Proxy header handling (X-Forwarded-*) |
+
+---
+
+## HikariCP Datasource (Tenant Registry DB)
+
+The `fineract_tenants` database holds the multi-tenant registry. Configured via `spring.datasource.hikari.*`.
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `spring.datasource.hikari.driverClassName` | `FINERACT_HIKARI_DRIVER_SOURCE_CLASS_NAME` | `org.postgresql.Driver` | JDBC driver class |
+| `spring.datasource.hikari.jdbcUrl` | `FINERACT_HIKARI_JDBC_URL` | `jdbc:postgresql://localhost:5432/fineract_tenants` | Tenants DB JDBC URL |
+| `spring.datasource.hikari.username` | `FINERACT_HIKARI_USERNAME` | `root` | DB username |
+| `spring.datasource.hikari.password` | `FINERACT_HIKARI_PASSWORD` | `postgres` | DB password |
+| `spring.datasource.hikari.minimumIdle` | `FINERACT_HIKARI_MINIMUM_IDLE` | `3` | Pool minimum idle connections |
+| `spring.datasource.hikari.maximumPoolSize` | `FINERACT_HIKARI_MAXIMUM_POOL_SIZE` | `10` | Pool maximum size |
+| `spring.datasource.hikari.idleTimeout` | `FINERACT_HIKARI_IDLE_TIMEOUT` | `60000` | Idle timeout (ms) |
+| `spring.datasource.hikari.connectionTimeout` | `FINERACT_HIKARI_CONNECTION_TIMEOUT` | `20000` | Connection acquisition timeout (ms) |
+| `spring.datasource.hikari.leakDetectionThreshold` | `FINERACT_HIKARI_LEAK_DETECTION_THRESHOLD` | `0` | Leak detection (0 = disabled) |
+| `spring.datasource.hikari.connectionTestquery` | `FINERACT_HIKARI_TEST_QUERY` | `SELECT 1` | Connection validation query |
+| `spring.datasource.hikari.autoCommit` | `FINERACT_HIKARI_AUTO_COMMIT` | `true` | Auto-commit on connection |
+| `spring.datasource.hikari.transactionIsolation` | `FINERACT_HIKARI_TRANSACTION_ISOLATION` | `TRANSACTION_REPEATABLE_READ` | Transaction isolation level |
+| `spring.datasource.hikari.dataSourceProperties['cachePrepStmts']` | `FINERACT_HIKARI_DS_PROPERTIES_CACHE_PREP_STMTS` | `true` | Cache prepared statements |
+| `spring.datasource.hikari.dataSourceProperties['prepStmtCacheSize']` | `FINERACT_HIKARI_DS_PROPERTIES_PREP_STMT_CACHE_SIZE` | `250` | Prepared statement cache size |
+| `spring.datasource.hikari.dataSourceProperties['rewriteBatchedStatements']` | `FINERACT_HIKARI_DS_PROPERTIES_REWRITE_BATCHED_STATEMENTS` | `true` | Batch rewriting optimization |
+
+---
+
+## Tenant Database
+
+Each tenant's own database (e.g., `fineract_default`) is created/connected using `fineract.tenant.*`. These become Liquibase parameters for the `db.changelog-master.xml` migration run on startup.
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.tenant.host` | `FINERACT_DEFAULT_TENANTDB_HOSTNAME` | `localhost` | Default tenant DB host |
+| `fineract.tenant.port` | `FINERACT_DEFAULT_TENANTDB_PORT` | `5432` | Default tenant DB port |
+| `fineract.tenant.username` | `FINERACT_DEFAULT_TENANTDB_UID` | `root` | Default tenant DB username |
+| `fineract.tenant.password` | `FINERACT_DEFAULT_TENANTDB_PWD` | `postgres` | Default tenant DB password |
+| `fineract.tenant.timezone` | `FINERACT_DEFAULT_TENANTDB_TIMEZONE` | `Asia/Kolkata` | Tenant timezone |
+| `fineract.tenant.identifier` | `FINERACT_DEFAULT_TENANTDB_IDENTIFIER` | `default` | Tenant identifier string |
+| `fineract.tenant.name` | `FINERACT_DEFAULT_TENANTDB_NAME` | `fineract_default` | Tenant schema/DB name |
+| `fineract.tenant.description` | `FINERACT_DEFAULT_TENANTDB_DESCRIPTION` | `Default Demo Tenant` | Human-readable tenant name |
+| `fineract.tenant.master-password` | `FINERACT_DEFAULT_TENANTDB_MASTER_PASSWORD` | `fineract` | Master encryption password |
+| `fineract.tenant.encrytion` | `FINERACT_DEFAULT_TENANTDB_ENCRYPTION` | `AES/CBC/PKCS5Padding` | Encryption algorithm for tenant credentials |
+| `fineract.tenant.parameters` | `FINERACT_DEFAULT_TENANTDB_CONN_PARAMS` | _(empty)_ | Extra JDBC connection parameters |
+| `fineract.tenant.read-only-host` | `FINERACT_DEFAULT_TENANTDB_RO_HOSTNAME` | _(empty)_ | Read replica host |
+| `fineract.tenant.read-only-port` | `FINERACT_DEFAULT_TENANTDB_RO_PORT` | _(empty)_ | Read replica port |
+| `fineract.tenant.read-only-username` | `FINERACT_DEFAULT_TENANTDB_RO_UID` | _(empty)_ | Read replica username |
+| `fineract.tenant.read-only-password` | `FINERACT_DEFAULT_TENANTDB_RO_PWD` | _(empty)_ | Read replica password |
+| `fineract.tenant.read-only-name` | `FINERACT_DEFAULT_TENANTDB_RO_NAME` | _(empty)_ | Read replica DB name |
+| `fineract.tenant.config.min-pool-size` | `FINERACT_CONFIG_MIN_POOL_SIZE` | `-1` | Tenant connection pool min (-1 = default) |
+| `fineract.tenant.config.max-pool-size` | `FINERACT_CONFIG_MAX_POOL_SIZE` | `-1` | Tenant connection pool max |
+| `fineract.tenant.config.leak-detection-threshold` | `FINERACT_CONFIG_LEAK_DETECTION_THRESHOLD` | `0` | Tenant pool leak detection |
+| `fineract.tenant.config.rounding-mode` | `FINERACT_CONFIG_ROUNDING_MODE` | `6` | BigDecimal rounding mode (6 = HALF_EVEN) |
+
+<Note>
+  `fineract.tenant.password` and `fineract.database.defaultMasterPassword` are secrets — never commit actual values. Use environment injection from a secrets manager in production.
+</Note>
+
+---
+
+## Security
+
+### Basic Auth
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.security.basicauth.enabled` | `FINERACT_SECURITY_BASICAUTH_ENABLED` | `true` | Enable HTTP Basic authentication |
+| `fineract.security.oauth2.enabled` | `FINERACT_SECURITY_OAUTH_ENABLED` | `false` | Enable OAuth2/JWT bearer authentication |
+| `fineract.security.2fa.enabled` | `FINERACT_SECURITY_2FA_ENABLED` | `false` | Enable two-factor authentication |
+
+### CORS
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.security.cors.enabled` | `FINERACT_SECURITY_CORS_ENABLED` | `true` | Enable CORS filter |
+| `fineract.security.cors.allowed-origin-patterns` | `FINERACT_SECURITY_CORS_ALLOWED_ORIGIN_PATTERNS` | `*` | Allowed origin patterns |
+| `fineract.security.cors.allowed-methods` | `FINERACT_SECURITY_CORS_ALLOWED_METHODS` | `*` | Allowed HTTP methods |
+| `fineract.security.cors.allowed-headers` | `FINERACT_SECURITY_CORS_ALLOWED_HEADERS` | `*` | Allowed request headers |
+| `fineract.security.cors.exposed-headers` | `FINERACT_SECURITY_CORS_EXPOSED_HEADERS` | `*` | Headers exposed to browser |
+| `fineract.security.cors.allow-credentials` | `FINERACT_SECURITY_CORS_ALLOW_CREDENTIALS` | `true` | Allow credentials (cookies, authorization) |
+
+### OAuth2 Client Registration (example: `frontend-client`)
+
+| Property | Env Var | Default |
+|---|---|---|
+| `fineract.security.oauth2.client.registrations.frontend-client.client-id` | `FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_ID` | `frontend-client` |
+| `fineract.security.oauth2.client.registrations.frontend-client.scopes` | `FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_SCOPES` | `read,write` |
+| `fineract.security.oauth2.client.registrations.frontend-client.authorization-grant-types` | `FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_GRANTS` | `authorization_code,refresh_token` |
+| `fineract.security.oauth2.client.registrations.frontend-client.redirect-uris` | `FINERACT_SECURITY_OAUTH2_CLIENTS_FRONTEND_REDIRECT` | `http://localhost:3000/callback` |
+
+### OIDC Federation (Keycloak / Azure AD / Okta / Auth0)
+
+Set `spring.security.oauth2.resourceserver.jwt.issuer-uri` (commented out by default) alongside these properties to federate with an external IdP.
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.security.oidc-federation.enabled` | `FINERACT_SECURITY_OIDC_FEDERATION_ENABLED` | `false` | Enable OIDC federation |
+| `fineract.security.oidc-federation.tenant-claim-name` | `FINERACT_SECURITY_OIDC_TENANT_CLAIM` | `fineract_tenant` | JWT claim that maps to tenant |
+| `fineract.security.oidc-federation.username-claim` | `FINERACT_SECURITY_OIDC_USERNAME_CLAIM` | `preferred_username` | JWT claim used as username |
+| `fineract.security.oidc-federation.auto-create-user` | `FINERACT_SECURITY_OIDC_AUTO_CREATE_USER` | `false` | Auto-provision users from JWT |
+| `fineract.security.oidc-federation.provider` | `FINERACT_SECURITY_OIDC_PROVIDER` | `generic` | Provider hint (`keycloak`, `azure`, etc.) |
+| `fineract.security.oidc-federation.post-logout-redirect-uri` | `FINERACT_SECURITY_OIDC_POST_LOGOUT_URI` | _(empty)_ | Post-logout redirect |
+
+---
+
+## Instance Mode
+
+Controls which roles this node fulfills in a distributed Fineract cluster. The Kafka-based setup in `docker-compose-postgresql-kafka.yml` uses this to designate manager vs worker nodes.
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.mode.read-enabled` | `FINERACT_MODE_READ_ENABLED` | `true` | Accept read (GET) API requests |
+| `fineract.mode.write-enabled` | `FINERACT_MODE_WRITE_ENABLED` | `true` | Accept write (POST/PUT) API requests |
+| `fineract.mode.batch-worker-enabled` | `FINERACT_MODE_BATCH_WORKER_ENABLED` | `true` | Execute COB/batch worker jobs |
+| `fineract.mode.batch-manager-enabled` | `FINERACT_MODE_BATCH_MANAGER_ENABLED` | `true` | Schedule/partition COB/batch jobs |
+| `fineract.node-id` | `FINERACT_NODE_ID` | `1` | Unique node identifier in cluster |
+
+---
+
+## Batch / COB (Close-of-Business) Properties
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.job.loan-cob-enabled` | `FINERACT_JOB_LOAN_COB_ENABLED` | `true` | Enable loan COB job |
+| `fineract.job.stuck-retry-threshold` | `FINERACT_JOB_STUCK_RETRY_THRESHOLD` | `5` | Retries before marking a job stuck |
+| `fineract.partitioned-job.partitioned-job-properties[0].job-name` | _(hardcoded)_ | `LOAN_COB` | Partitioned job name |
+| `fineract.partitioned-job.partitioned-job-properties[0].chunk-size` | `LOAN_COB_CHUNK_SIZE` | `100` | Loans processed per chunk |
+| `fineract.partitioned-job.partitioned-job-properties[0].partition-size` | `LOAN_COB_PARTITION_SIZE` | `100` | Loans per partition |
+| `fineract.partitioned-job.partitioned-job-properties[0].thread-pool-core-pool-size` | `LOAN_COB_THREAD_POOL_CORE_POOL_SIZE` | `5` | Worker thread pool core size |
+| `fineract.partitioned-job.partitioned-job-properties[0].thread-pool-max-pool-size` | `LOAN_COB_THREAD_POOL_MAX_POOL_SIZE` | `5` | Worker thread pool max size |
+| `fineract.partitioned-job.partitioned-job-properties[0].retry-limit` | `LOAN_COB_RETRY_LIMIT` | `5` | Per-loan step retry limit |
+| `fineract.partitioned-job.partitioned-job-properties[0].poll-interval` | `LOAN_COB_POLL_INTERVAL` | `500` | Worker poll interval (ms) |
+
+### Journal Entry Aggregation Job
+
+| Property | Env Var | Default |
+|---|---|---|
+| `fineract.job.journal-entry-aggregation.enabled` | `FINERACT_JOB_JOURNAL_ENTRY_AGGREGATION_ENABLED` | `true` |
+| `fineract.job.journal-entry-aggregation.chunk-size` | `FINERACT_JOB_JOURNAL_ENTRY_AGGREGATION_CHUNK_SIZE` | `2000` |
+| `fineract.job.journal-entry-aggregation.exclude-recent-N-days` | `FINERACT_JOB_JOURNAL_ENTRY_AGGREGATION_EXCLUDE_RECENT_N_DAYS` | `1` |
+
+---
+
+## External Events & Remote Job Message Handlers
+
+### External Events
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.events.external.enabled` | `FINERACT_EXTERNAL_EVENTS_ENABLED` | `false` | Enable outbound domain events |
+| `fineract.events.external.partition-size` | `FINERACT_EXTERNAL_EVENTS_PARTITION_SIZE` | `5000` | Batch size for event publication |
+| `fineract.events.external.thread-pool-core-pool-size` | `FINERACT_EVENT_TASK_EXECUTOR_CORE_POOL_SIZE` | `2` | Event executor core threads |
+| `fineract.events.external.thread-pool-max-pool-size` | `FINERACT_EVENT_TASK_EXECUTOR_MAX_POOL_SIZE` | `25` | Event executor max threads |
+| `fineract.events.external.producer.jms.enabled` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_ENABLED` | `false` | JMS event producer |
+| `fineract.events.external.producer.jms.event-queue-name` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_QUEUE_NAME` | _(empty)_ | JMS destination queue |
+| `fineract.events.external.producer.jms.broker-url` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_BROKER_URL` | `tcp://127.0.0.1:61616` | ActiveMQ broker URL |
+| `fineract.events.external.producer.kafka.enabled` | `FINERACT_EXTERNAL_EVENTS_KAFKA_ENABLED` | `false` | Kafka event producer |
+| `fineract.events.external.producer.kafka.bootstrap-servers` | `FINERACT_EXTERNAL_EVENTS_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka brokers |
+| `fineract.events.external.producer.kafka.topic.name` | `FINERACT_EXTERNAL_EVENTS_KAFKA_TOPIC_NAME` | `external-events` | Kafka topic name |
+| `fineract.events.external.producer.kafka.topic.partitions` | `FINERACT_EXTERNAL_EVENTS_KAFKA_TOPIC_PARTITIONS` | `10` | Topic partition count |
+
+### Remote Job Message Handler
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.remote-job-message-handler.spring-events.enabled` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_SPRING_EVENTS_ENABLED` | `true` | Use Spring application events (single-node) |
+| `fineract.remote-job-message-handler.jms.enabled` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_JMS_ENABLED` | `false` | Use JMS for job dispatch |
+| `fineract.remote-job-message-handler.jms.broker-url` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_JMS_BROKER_URL` | `tcp://127.0.0.1:61616` | JMS broker |
+| `fineract.remote-job-message-handler.jms.request-queue-name` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_JMS_QUEUE_NAME` | `JMS-request-queue` | JMS queue name |
+| `fineract.remote-job-message-handler.kafka.enabled` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_ENABLED` | `false` | Use Kafka for job dispatch |
+| `fineract.remote-job-message-handler.kafka.bootstrap-servers` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka brokers |
+| `fineract.remote-job-message-handler.kafka.topic.name` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_TOPIC_NAME` | `job-topic` | Kafka topic for job dispatch |
+| `fineract.remote-job-message-handler.kafka.consumer.group-id` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_CONSUMER_GROUPID` | `fineract-consumer-group-id` | Kafka consumer group |
+
+---
+
+## Content & S3 Storage
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.content.regex-whitelist-enabled` | `FINERACT_CONTENT_REGEX_WHITELIST_ENABLED` | `true` | Enforce filename regex whitelist |
+| `fineract.content.regex-whitelist` | `FINERACT_CONTENT_REGEX_WHITELIST` | `*.pdf,*.doc,*.docx,*.xls,*.xlsx,*.jpg,*.jpeg,*.png` | Allowed filename patterns |
+| `fineract.content.mime-whitelist-enabled` | `FINERACT_CONTENT_MIME_WHITELIST_ENABLED` | `true` | Enforce MIME type whitelist |
+| `fineract.content.filesystem.enabled` | `FINERACT_CONTENT_FILESYSTEM_ENABLED` | `true` | Store uploads on local filesystem |
+| `fineract.content.filesystem.rootFolder` | `FINERACT_CONTENT_FILESYSTEM_ROOT_FOLDER` | `~/.fineract` | Local filesystem root for uploads |
+| `fineract.content.s3.enabled` | `FINERACT_CONTENT_S3_ENABLED` | `false` | Store uploads in Amazon S3 |
+| `fineract.content.s3.bucketName` | `FINERACT_CONTENT_S3_BUCKET_NAME` | _(empty)_ | S3 bucket name |
+| `fineract.content.s3.accessKey` | `FINERACT_CONTENT_S3_ACCESS_KEY` | _(empty)_ | AWS access key |
+| `fineract.content.s3.secretKey` | `FINERACT_CONTENT_S3_SECRET_KEY` | _(empty)_ | AWS secret key |
+| `fineract.content.s3.region` | `FINERACT_CONTENT_S3_REGION` | _(empty)_ | AWS region |
+| `fineract.content.s3.endpoint` | `FINERACT_CONTENT_S3_ENDPOINT` | _(empty)_ | Custom S3-compatible endpoint (MinIO, etc.) |
+| `fineract.content.s3.path-style-addressing-enabled` | `FINERACT_CONTENT_S3_PATH_STYLE_ADDRESSING_ENABLED` | `false` | Use path-style S3 URLs |
+| `fineract.report.export.s3.enabled` | `FINERACT_REPORT_EXPORT_S3_ENABLED` | `false` | Export reports to S3 |
+| `fineract.report.export.s3.bucket` | `FINERACT_REPORT_EXPORT_S3_BUCKET_NAME` | _(empty)_ | S3 bucket for reports |
+| `spring.servlet.multipart.max-file-size` | `FINERACT_MULTIPART_FILE_SIZE` | `5MB` | Max upload file size |
+| `spring.servlet.multipart.max-request-size` | `FINERACT_MULTIPART_REQUEST_SIZE` | `10MB` | Max upload request size |
+
+---
+
+## Loan Transaction Processors
+
+Each named processor can be independently enabled/disabled. All default to `true`.
+
+| Property | Env Var | Processor Name |
+|---|---|---|
+| `fineract.loan.transactionprocessor.advanced-payment-strategy.enabled` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_ADVANCED_PAYMENT_STRATEGY_ENABLED` | Advanced Payment Allocation Strategy |
+| `fineract.loan.transactionprocessor.mifos-standard.enabled` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_MIFOS_STANDARD_ENABLED` | Mifos Standard |
+| `fineract.loan.transactionprocessor.creocore.enabled` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_CREOCORE_ENABLED` | CreoCore |
+| `fineract.loan.transactionprocessor.early-repayment.enabled` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_EARLY_REPAYMENT_ENABLED` | Early Repayment |
+| `fineract.loan.transactionprocessor.heavensfamily.enabled` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_HEAVENSFAMILY_ENABLED` | Heavens Family |
+| `fineract.loan.transactionprocessor.interest-principal-penalties-fees.enabled` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_INTEREST_PRINCIPAL_PENALTIES_FEES_ENABLED` | Interest → Principal → Penalties → Fees |
+| `fineract.loan.transactionprocessor.principal-interest-penalties-fees.enabled` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_PRINCIPAL_INTEREST_PENALTIES_FEES_ENABLED` | Principal → Interest → Penalties → Fees |
+| `fineract.loan.transactionprocessor.rbi-india.enabled` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_RBI_INDIA_ENABLED` | RBI India |
+| `fineract.loan.transactionprocessor.error-not-found-fail` | `FINERACT_LOAN_TRANSACTIONPROCESSOR_ERROR_NOT_FOUND_FAIL` | Fail if processor not found |
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.loan.status-change-history-statuses` | `FINERACT_LOAN_STATUS_CHANGE_HISTORY_STATUSES` | `NONE` | Track status history (`NONE`, `ALL`, or comma-separated statuses) |
+
+---
+
+## Modules
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.module.investor.enabled` | `FINERACT_MODULE_INVESTOR_ENABLED` | `true` | Enable the investor/asset externalization module |
+| `fineract.module.loan-origination.enabled` | `FINERACT_MODULE_LOAN_ORIGINATION_ENABLED` | `true` | Enable loan origination module |
+
+---
+
+## Observability & Management
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `management.endpoints.web.exposure.include` | `FINERACT_MANAGEMENT_ENDPOINT_WEB_EXPOSURE_INCLUDE` | `health,info,prometheus` | Actuator endpoints exposed |
+| `management.health.livenessState.enabled` | _(hardcoded)_ | `true` | Liveness probe at `/actuator/health/liveness` |
+| `management.health.readinessState.enabled` | _(hardcoded)_ | `true` | Readiness probe at `/actuator/health/readiness` |
+| `management.tracing.enabled` | `FINERACT_MANAGEMENT_TRACIING_ENABLED` | `false` | Distributed tracing |
+| `management.prometheus.metrics.export.enabled` | `FINERACT_MANAGEMENT_PROMETHEUS_ENABLED` | `true` | Prometheus scrape endpoint |
+| `management.otlp.metrics.export.enabled` | `FINERACT_MANAGEMENT_OLTP_ENABLED` | `false` | OTLP metrics export |
+| `management.otlp.metrics.export.url` | `FINERACT_MANAGEMENT_OLTP_METRICS_EXPORT_URL` | `http://tempo:4318/v1/traces` | OTLP endpoint |
+| `management.metrics.export.cloudwatch.enabled` | `FINERACT_MANAGEMENT_CLOUDWATCH_ENABLED` | `false` | AWS CloudWatch metrics |
+| `fineract.logging.json.enabled` | `FINERACT_LOGGING_JSON_ENABLED` | `false` | JSON structured logging |
+| `fineract.correlation.enabled` | `FINERACT_LOGGING_HTTP_CORRELATION_ID_ENABLED` | `false` | HTTP correlation ID logging |
+| `fineract.correlation.header-name` | `FINERACT_LOGGING_HTTP_CORRELATION_ID_HEADER_NAME` | `X-Correlation-ID` | Correlation header name |
+
+---
+
+## Miscellaneous
+
+| Property | Env Var | Default | Effect |
+|---|---|---|---|
+| `fineract.idempotency-key-header-name` | `FINERACT_IDEMPOTENCY_KEY_HEADER_NAME` | `Idempotency-Key` | Idempotency header name |
+| `fineract.query.in-clause-parameter-size-limit` | `FINERACT_QUERY_PARAMETER_SIZE` | `1000` | Max IN-clause parameters |
+| `fineract.ip-tracking.enabled` | `FINERACT_CLIENT_IP_TRACKING_ENABLED` | `false` | Track client IPs |
+| `fineract.jpa.statementLoggingEnabled` | `FINERACT_STATEMENT_LOGGING_ENABLED` | `false` | Log all SQL statements |
+| `fineract.database.defaultMasterPassword` | `FINERACT_DEFAULT_MASTER_PASSWORD` | `fineract` | Master key for tenant encryption |
+| `fineract.notification.user-notification-system.enabled` | `FINERACT_USER_NOTIFICATION_SYSTEM_ENABLED` | `true` | User notification system |
+| `fineract.defaults.office-id` | `FINERACT_CONFIG_DEFAULT_OFFICE_ID` | `1` | Default office ID |
+| `fineract.insecure-http-client` | `FINERACT_INSECURE_HTTP_CLIENT` | `true` | Skip TLS verification in HTTP client |
+| `spring.batch.job.enabled` | _(hardcoded)_ | `false` | Prevent Spring Batch auto-run on startup |
+| `spring.liquibase.enabled` | `FINERACT_LIQUIBASE_ENABLED` | `true` | Run Liquibase migrations on startup |
+
+<Warning>
+  In the Kafka cluster mode (`docker-compose-postgresql-kafka.yml`), the worker node sets `FINERACT_LIQUIBASE_ENABLED=false` to prevent concurrent migration runs. Only the manager runs Liquibase.
+</Warning>
+
+---
+
+## SQL Injection Validation
+
+Fineract ships 8 named patterns in `application.properties` guarding dynamic SQL queries:
+
+| Pattern Index | Name | Protects Against |
+|---|---|---|
+| 0 | `inject-blind` | Blind boolean injection (`1=1`) |
+| 1 | `detect-entry-point` | Entry point detection |
+| 2 | `inject-timing` | Time-based injection (SLEEP, pg_sleep) |
+| 3 | `detect-backend` | Backend fingerprinting |
+| 4 | `detect-column` | Column enumeration (ORDER BY, UNION SELECT) |
+| 5 | `detect-out-of-bands` | OOB exfiltration (LOAD_FILE) |
+| 6 | `inject-stacked-query` | Stacked queries (`;DROP TABLE`) |
+| 7 | `inject-comment` | Comment injection (`--`, `/*`) |
+
+These patterns are assembled into three validation profiles: `main`, `adhoc`, and `column`. All are enabled by default.
+
+---
+
+## Cache Configuration
+
+| Property | Default | Effect |
+|---|---|---|
+| `fineract.cache.default-template.ttl` | `1m` | Default cache TTL |
+| `fineract.cache.default-template.maximum-entries` | `1000` | Default cache size |
+| `fineract.cache.custom-templates.userTFAccessToken.ttl` | `2h` | 2FA token cache TTL |
+| `fineract.cache.custom-templates.userTFAccessToken.maximum-entries` | `10000` | 2FA token cache size |

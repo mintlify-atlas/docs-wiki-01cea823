@@ -1,0 +1,340 @@
+---
+title: "Avro Event Schemas: All 83 External Payloads"
+sidebarTitle: "Avro Schemas"
+description: "Complete reference for Apache Fineract's 83 Avro schemas in fineract-avro-schemas. Covers all domains, envelope records, compilation pipeline, and serialization flow."
+---
+
+Apache Fineract publishes all external business events as Avro-encoded byte payloads. Every schema lives in the Gradle module `fineract-avro-schemas`, under `fineract-avro-schemas/src/main/avro/`, and is compiled to Java source at build time. There is **no external schema registry** — the schema's fully-qualified class name is embedded in the `MessageV1.dataschema` field so consumers can resolve it from the JAR on the classpath.
+
+## Module Location and Purpose
+
+| Item | Path |
+|------|------|
+| Module root | `fineract-avro-schemas/` |
+| Avro source | `fineract-avro-schemas/src/main/avro/` |
+| Build script | `fineract-avro-schemas/build.gradle` |
+| BigDecimal template | `fineract-avro-schemas/src/main/resources/avro-templates/bigdecimal.avsc` |
+| Generator templates | `fineract-avro-schemas/src/main/resources/avro-generator-templates/` |
+
+<Note>
+The module compiles to Java 1.8 source/target compatibility so the generated classes can be embedded in broker plugins and consumers that target Java 8.
+</Note>
+
+---
+
+## Compilation Pipeline
+
+The build uses `com.github.davidmc24.gradle.plugin.avro-base` and a custom `PreprocessAvroSchemasTask`.
+
+<Steps>
+  <Step title="Spotless JSON formatting">
+    `spotlessJsonApply` runs first, formatting all `*.avsc` files for consistent style.
+  </Step>
+  <Step title="PreprocessAvroSchemas task">
+    The custom `PreprocessAvroSchemasTask` in `build.gradle` walks every `.avsc` file under
+    `src/main/avro/`, replaces every `"bigdecimal"` token with the inline JSON from
+    `bigdecimal.avsc` (`{ "logicalType": "decimal", "precision": 27, "scale": 8, "type": "bytes" }`),
+    and writes preprocessed files to `$buildDir/generated/avro/src/main/avro/`.
+  </Step>
+  <Step title="GenerateAvroJavaTask (buildJavaSdk)">
+    `buildJavaSdk` (type `GenerateAvroJavaTask`) reads preprocessed schemas from
+    `$buildDir/generated/avro/src/main/avro/` and emits Java sources into
+    `$buildDir/generated/java/src/main/java/`.
+  </Step>
+  <Step title="compileJava">
+    `compileJava` depends on `buildJavaSdk`. Generated source is included in `sourceSets.main.java`.
+    Compiler flags: `-parameters -proc:none -Xlint:-options`. ErrorProne is disabled for this module.
+  </Step>
+</Steps>
+
+---
+
+## Versioning Strategy
+
+Every schema name carries a **`V1` suffix** (e.g. `LoanAccountDataV1`, `MessageV1`). The Avro namespace mirrors the directory hierarchy: `org.apache.fineract.avro.<domain>.v1`. When a breaking change is needed, a new `V2` schema is added alongside `V1` — old consumers continue reading `V1`, new consumers read `V2`. The `MessageV1.dataschema` field contains the fully qualified record name so consumers can select the correct deserializer.
+
+---
+
+## Envelope Schemas
+
+These three root-level schemas wrap all event payloads.
+
+<CardGroup cols={3}>
+  <Card title="MessageV1" icon="envelope">
+    `BulkMessagePayloadV1.avsc` / `MessageV1.avsc`<br/>
+    The single-event envelope written to the `m_external_event` table and dispatched by `ExternalEventProducer`.
+  </Card>
+  <Card title="BulkMessagePayloadV1" icon="layer-group">
+    Wraps a `datas: array<BulkMessageItemV1>` for COB bulk-event batches.
+  </Card>
+  <Card title="BulkMessageItemV1" icon="list">
+    One item inside a bulk message: `id`, `type`, `category`, `dataschema`, `data (bytes)`.
+  </Card>
+</CardGroup>
+
+### MessageV1 — `MessageV1.avsc`
+
+`namespace: org.apache.fineract.avro`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `long` | Database ID of the persisted `ExternalEvent` row |
+| `source` | `string` | Unique identifier of the source service |
+| `type` | `string` | Business event type, e.g. `LoanApprovedBusinessEvent` |
+| `category` | `string` | Domain category, e.g. `LOAN` |
+| `createdAt` | `string` | UTC ISO_LOCAL_DATE_TIME, e.g. `2011-12-03T10:15:30` |
+| `businessDate` | `string` | ISO_LOCAL_DATE business date |
+| `tenantId` | `string` | Tenant identifier, e.g. `default` |
+| `idempotencyKey` | `string` | Consumer de-duplication key |
+| `dataschema` | `string` | FQN of the payload schema, e.g. `org.apache.fineract.avro.loan.v1.LoanAccountDataV1` |
+| `data` | `bytes` | Avro-serialized payload bytes |
+
+### BulkMessagePayloadV1 — `BulkMessagePayloadV1.avsc`
+
+`namespace: org.apache.fineract.avro` — field: `datas: array<BulkMessageItemV1>`
+
+### BulkMessageItemV1 — `BulkMessageItemV1.avsc`
+
+`namespace: org.apache.fineract.avro` — fields: `id (long)`, `type`, `category`, `dataschema`, `data (bytes)`
+
+---
+
+## All 83 Schemas by Domain
+
+### Loan Domain — `loan/v1/` (37 schemas)
+
+<Accordion title="LoanAccountDataV1 — the primary loan event payload">
+
+**File:** `loan/v1/LoanAccountDataV1.avsc` | **Namespace:** `org.apache.fineract.avro.loan.v1`
+
+Top-level fields: `id`, `accountNo`, `externalId`, `externalOwnerId`, `settlementDate`, `purchasePriceRatio`, `status (LoanStatusEnumDataV1)`, `subStatus (EnumOptionDataV1)`, `clientId`, `clientAccountNo`, `clientName`, `clientOfficeId`, `clientExternalId`, `loanProductId`, `loanProductName`, `loanProductDescription`, `isLoanProductLinkedToFloatingRate`, `fundId`, `fundName`, `loanPurposeId`, `loanPurposeName`, `loanOfficerId`, `loanOfficerName`, `loanType (EnumOptionDataV1)`, `principal`, `approvedPrincipal`, `proposedPrincipal`, `netDisbursalAmount`, `termFrequency`, `termPeriodFrequencyType`, `numberOfRepayments`, `repaymentEvery`, `repaymentFrequencyType`, `repaymentFrequencyNthDayType`, `repaymentFrequencyDayOfWeekType`, `interestRatePerPeriod`, `interestRateFrequencyType`, `annualInterestRate`, `isFloatingInterestRate`, `interestRateDifferential`, `amortizationType`, `interestType`, `interestCalculationPeriodType`, `allowPartialPeriodInterestCalculation`, `inArrearsTolerance`, `transactionProcessingStrategyCode`, `transactionProcessingStrategyName`, `graceOnPrincipalPayment`, `recurringMoratoriumOnPrincipalPeriods`, `graceOnInterestPayment`, `graceOnInterestCharged`, `graceOnArrearsAgeing`, `interestChargedFromDate`, `expectedFirstRepaymentOnDate`, `syncDisbursementWithMeeting`, `timeline (LoanApplicationTimelineDataV1)`, `summary (LoanSummaryDataV1)`, `repaymentSchedule (LoanScheduleDataV1)`, `transactions (array<LoanTransactionDataV1>)`, `charges (array<LoanChargeDataV1>)`, `meeting (CalendarDataV1)`, `disbursementDetails (array<DisbursementDataV1>)`, `originalSchedule (LoanScheduleDataV1)`, `totalOverpaid`, `loanCounter`, `loanProductCounter`, `linkedAccount (PortfolioAccountDataV1)`, `multiDisburseLoan`, `disallowExpectedDisbursements`, `canDefineInstallmentAmount`, `fixedEmiAmount`, `maxOutstandingLoanBalance`, `canDisburse`, `emiAmountVariations`, `loanTermVariations`, `clientActiveLoanOptions`, `canUseForTopup`, `isTopup`, `closureLoanId`, `closureLoanAccountNo`, `topupAmount`, `product (LoanProductDataV1)`, `inArrears`, `isNPA`, `overdueCharges`, `daysInMonthType`, `daysInYearType`, `daysInYearCustomStrategy`, `isInterestRecalculationEnabled`, `interestRecalculationData`, `createStandingInstructionAtDisbursement`, `delinquent (CollectionDataV1)`, `delinquencyRange (DelinquencyRangeDataV1)`, `overpaidOnDate`, `lastClosedBusinessDate`, `chargedOff`, `enableInstallmentLevelDelinquency`, `enableDownPayment`, `disbursedAmountPercentageForDownPayment`, `enableAutoRepaymentForDownPayment`, `repaymentStartDateType`, `interestRecognitionOnDisbursementDate`, `customData (map<bytes>)`, `originators (array<OriginatorDetailsV1>)`, `actualNoTerm`
+
+</Accordion>
+
+| Schema File | Record Name | Key Fields |
+|-------------|-------------|------------|
+| `loan/v1/LoanAccountDataV1.avsc` | `LoanAccountDataV1` | Full loan account snapshot (see accordion above) |
+| `loan/v1/LoanTransactionDataV1.avsc` | `LoanTransactionDataV1` | `id`, `loanId`, `externalLoanId`, `type (LoanTransactionEnumDataV1)`, `date`, `currency`, `paymentDetailData`, `amount`, `principalPortion`, `interestPortion`, `feeChargesPortion`, `penaltyChargesPortion`, `overpaymentPortion`, `externalId`, `externalOwnerId`, `manuallyReversed`, `reversed`, `reversedOnDate`, `loanChargePaidByList`, `transactionRelations`, `unpaidCharges`, `customData`, `classification`, `originators`, `flags` |
+| `loan/v1/LoanChargeDataV1.avsc` | `LoanChargeDataV1` | `id`, `chargeId`, `name`, `chargeTimeType`, `dueDate`, `amount`, `amountPaid`, `amountOutstanding`, `penalty`, `externalId`, `externalLoanId`, `submittedOnDate`, `customData`, `originators` |
+| `loan/v1/LoanProductDataV1.avsc` | `LoanProductDataV1` | `id`, `name`, `shortName`, `currency`, `principal`, `numberOfRepayments`, `interestRatePerPeriod`, `amortizationType`, `interestType`, `transactionProcessingStrategyCode`, `delinquencyBucket`, `customData` (50+ fields total) |
+| `loan/v1/LoanSummaryDataV1.avsc` | `LoanSummaryDataV1` | `principalDisbursed`, `principalPaid`, `principalOutstanding`, `interestCharged`, `interestPaid`, `feeChargesCharged`, `totalOutstanding`, `totalOverdue`, `totalChargeback`, `writeoffReasonId`, `chargeOffReasonId`, `totalCapitalizedIncome` (50+ fields) |
+| `loan/v1/LoanScheduleDataV1.avsc` | `LoanScheduleDataV1` | `currency`, `loanTermInDays`, `totalPrincipalDisbursed`, `totalInterestCharged`, `totalRepaymentExpected`, `totalOutstanding`, `periods (array<LoanSchedulePeriodDataV1>)`, `futurePeriods` |
+| `loan/v1/LoanSchedulePeriodDataV1.avsc` | `LoanSchedulePeriodDataV1` | `period`, `fromDate`, `dueDate`, `principalDue`, `principalPaid`, `interestDue`, `interestPaid`, `feeChargesDue`, `penaltyChargesDue`, `totalDueForPeriod`, `downPaymentPeriod` |
+| `loan/v1/LoanApplicationTimelineDataV1.avsc` | `LoanApplicationTimelineDataV1` | `submittedOnDate`, `approvedOnDate`, `actualDisbursementDate`, `closedOnDate`, `writeOffOnDate`, `chargedOffOnDate`, `chargedOffByUsername` |
+| `loan/v1/LoanStatusEnumDataV1.avsc` | `LoanStatusEnumDataV1` | `id`, `code`, `value`, `pendingApproval`, `waitingForDisbursal`, `active`, `closed`, `overpaid` |
+| `loan/v1/LoanTransactionEnumDataV1.avsc` | `LoanTransactionEnumDataV1` | `id`, `code`, `value`, `disbursement`, `repayment`, `waiveInterest`, `waiveCharges`, `accrual`, `writeOff`, `chargeback`, `creditBalanceRefund`, `merchantIssuedRefund` |
+| `loan/v1/LoanTransactionAdjustmentDataV1.avsc` | `LoanTransactionAdjustmentDataV1` | `transactionToAdjust (LoanTransactionDataV1)`, `newTransactionDetail (LoanTransactionDataV1)`, `customData` |
+| `loan/v1/LoanTransactionRelationDataV1.avsc` | `LoanTransactionRelationDataV1` | `fromLoanTransaction`, `toLoanTransaction`, `toLoanCharge`, `amount`, `relationType`, `paymentType` |
+| `loan/v1/LoanTransactionFlagsDataV1.avsc` | `LoanTransactionFlagsDataV1` | `changedTerms` |
+| `loan/v1/LoanAccountDelinquencyRangeDataV1.avsc` | `LoanAccountDelinquencyRangeDataV1` | `loanId`, `loanAccountNo`, `loanExternalId`, `delinquencyRange`, `charges`, `currency`, `amount`, `delinquentDate`, `installmentDelinquencyBuckets`, `customData`, `originators` |
+| `loan/v1/LoanAccountStayedLockedDataV1.avsc` | `LoanAccountStayedLockedDataV1` | `id`, `externalId`, `accountNo` |
+| `loan/v1/LoanAccountsStayedLockedDataV1.avsc` | `LoanAccountsStayedLockedDataV1` | `loanAccounts (array<LoanAccountStayedLockedDataV1>)` |
+| `loan/v1/LoanAccountSummaryDataV1.avsc` | `LoanAccountSummaryDataV1` | `id`, `accountNo`, `externalId`, `productId`, `status`, `loanType`, `inArrears`, `originalLoan`, `loanBalance`, `amountPaid` |
+| `loan/v1/LoanOwnershipTransferDataV1.avsc` | `LoanOwnershipTransferDataV1` | `loanId`, `loanExternalId`, `type`, `transferExternalId`, `assetOwnerExternalId`, `previousOwnerExternalId`, `totalOutstandingBalanceAmount`, `settlementDate`, `purchasePriceRatio`, `customData` |
+| `loan/v1/LoanRepaymentDueDataV1.avsc` | `LoanRepaymentDueDataV1` | `loanId`, `loanAccountNo`, `loanExternalId`, `currency`, `installment (RepaymentDueDataV1)`, `pastDueAmount (RepaymentPastDueDataV1)`, `customData`, `originators` |
+| `loan/v1/CollectionDataV1.avsc` | `CollectionDataV1` | `pastDueDays`, `nextPaymentDueDate`, `nextPaymentAmount`, `delinquentDays`, `delinquentAmount`, `delinquentPrincipal`, `delinquentInterest`, `delinquentFee`, `delinquentPenalty`, `delinquencyPausePeriods`, `installmentDelinquencyBuckets` |
+| `loan/v1/DelinquencyBucketDataV1.avsc` | `DelinquencyBucketDataV1` | `id`, `name`, `ranges (array<DelinquencyRangeDataV1>)` |
+| `loan/v1/DelinquencyPausePeriodV1.avsc` | `DelinquencyPausePeriodV1` | `active`, `pausePeriodStart`, `pausePeriodEnd` |
+| `loan/v1/DelinquencyRangeDataV1.avsc` | `DelinquencyRangeDataV1` | `id`, `classification`, `minimumAgeDays`, `maximumAgeDays` |
+| `loan/v1/DisbursementDataV1.avsc` | `DisbursementDataV1` | `id`, `expectedDisbursementDate`, `actualDisbursementDate`, `principal`, `netDisbursalAmount`, `loanChargeId`, `chargeAmount` |
+| `loan/v1/LoanAmountDataV1.avsc` | `LoanAmountDataV1` | `totalAmount`, `principalAmount`, `interestAmount`, `feeAmount`, `penaltyAmount` |
+| `loan/v1/LoanChargeDataRangeViewV1.avsc` | `LoanChargeDataRangeViewV1` | `id`, `name`, `currency`, `amount` |
+| `loan/v1/LoanChargeDeletedV1.avsc` | `LoanChargeDeletedV1` | `id`, `chargeId` |
+| `loan/v1/LoanChargePaidByDataV1.avsc` | `LoanChargePaidByDataV1` | `id`, `amount`, `installmentNumber`, `chargeId`, `transactionId`, `name` |
+| `loan/v1/LoanInstallmentChargeDataV1.avsc` | `LoanInstallmentChargeDataV1` | `installmentNumber`, `dueDate`, `amount`, `amountOutstanding`, `amountWaived`, `paid`, `amountAccrued` |
+| `loan/v1/LoanInstallmentDelinquencyBucketDataV1.avsc` | `LoanInstallmentDelinquencyBucketDataV1` | `delinquencyRange`, `amount`, `charges`, `currency` |
+| `loan/v1/LoanInterestRecalculationDataV1.avsc` | `LoanInterestRecalculationDataV1` | `id`, `loanId`, `interestRecalculationCompoundingType`, `rescheduleStrategyType`, `calendarData`, `disallowInterestCalculationOnPastDue` |
+| `loan/v1/LoanProductBorrowerCycleVariationDataV1.avsc` | `LoanProductBorrowerCycleVariationDataV1` | `id`, `borrowerCycleNumber`, `paramType`, `valueConditionType`, `minValue`, `maxValue`, `defaultValue` |
+| `loan/v1/LoanProductGuaranteeDataV1.avsc` | `LoanProductGuaranteeDataV1` | `id`, `productId`, `mandatoryGuarantee`, `minimumGuaranteeFromOwnFunds`, `minimumGuaranteeFromGuarantor` |
+| `loan/v1/LoanProductInterestRecalculationDataV1.avsc` | `LoanProductInterestRecalculationDataV1` | `id`, `productId`, `interestRecalculationCompoundingType`, `rescheduleStrategyType`, `preClosureInterestCalculationStrategy` |
+| `loan/v1/LoanTermVariationsDataV1.avsc` | `LoanTermVariationsDataV1` | `id`, `termType`, `termVariationApplicableFrom`, `decimalValue`, `dateValue`, `isSpecificToInstallment`, `isProcessed` |
+| `loan/v1/OriginatorDetailsV1.avsc` | `OriginatorDetailsV1` | `id`, `externalId`, `name`, `status`, `originatorType`, `channelType` |
+| `loan/v1/RepaymentDueDataV1.avsc` | `RepaymentDueDataV1` | `installmentNumber`, `installmentDueDate`, `principalAmountDue`, `interestAmountDue`, `feeChargeAmountDue`, `penaltyChargeAmountDue`, `totalAmountDue` |
+| `loan/v1/RepaymentPastDueDataV1.avsc` | `RepaymentPastDueDataV1` | `totalAmount`, `principalAmount`, `interestAmount`, `feeAmount`, `penaltyAmount` |
+| `loan/v1/UnpaidChargeDataV1.avsc` | `UnpaidChargeDataV1` | `chargeId`, `chargeName`, `outstandingAmount` |
+
+---
+
+### Savings Domain — `savings/v1/` (11 schemas)
+
+| Schema File | Record Name | Key Fields |
+|-------------|-------------|------------|
+| `savings/v1/SavingsAccountDataV1.avsc` | `SavingsAccountDataV1` | `id`, `accountNo`, `depositType`, `externalId`, `clientId`, `clientName`, `savingsProductId`, `status (SavingsAccountStatusEnumDataV1)`, `subStatus`, `currency`, `nominalAnnualInterestRate`, `allowOverdraft`, `overdraftLimit`, `lienAllowed`, `summary (SavingsAccountSummaryDataV1)`, `transactions`, `charges` |
+| `savings/v1/SavingsAccountTransactionDataV1.avsc` | `SavingsAccountTransactionDataV1` | `id`, `transactionType (SavingsAccountTransactionEnumDataV1)`, `accountId`, `date`, `currency`, `paymentDetailData`, `amount`, `runningBalance`, `reversed`, `submittedOnDate`, `isReversal`, `originalTransactionId`, `lienTransaction`, `chargesPaidByData` |
+| `savings/v1/SavingsAccountSummaryDataV1.avsc` | `SavingsAccountSummaryDataV1` | `currency`, `totalDeposits`, `totalWithdrawals`, `totalInterestEarned`, `totalInterestPosted`, `accountBalance`, `availableBalance`, `interestPostedTillDate` |
+| `savings/v1/SavingsAccountStatusEnumDataV1.avsc` | `SavingsAccountStatusEnumDataV1` | `id`, `code`, `value`, `active`, `closed`, `prematureClosed`, `transferInProgress`, `matured` |
+| `savings/v1/SavingsAccountSubStatusEnumDataV1.avsc` | `SavingsAccountSubStatusEnumDataV1` | `id`, `code`, `value`, `none`, `inactive`, `dormant`, `escheat`, `block`, `blockCredit`, `blockDebit` |
+| `savings/v1/SavingsAccountTransactionEnumDataV1.avsc` | `SavingsAccountTransactionEnumDataV1` | `id`, `code`, `value`, `deposit`, `withdrawal`, `interestPosting`, `feeDeduction`, `withholdTax`, `escheat`, `amountHold`, `amountRelease` |
+| `savings/v1/SavingsAccountChargeDataV1.avsc` | `SavingsAccountChargeDataV1` | `id`, `chargeId`, `accountId`, `name`, `chargeTimeType`, `amount`, `amountPaid`, `amountOutstanding`, `penalty`, `isActive` |
+| `savings/v1/SavingsAccountChargesPaidByDataV1.avsc` | `SavingsAccountChargesPaidByDataV1` | `chargeId`, `amount`, `savingsAccountChargeData` |
+| `savings/v1/SavingsAccountApplicationTimelineDataV1.avsc` | `SavingsAccountApplicationTimelineDataV1` | `submittedOnDate`, `approvedOnDate`, `activatedOnDate`, `closedOnDate` |
+| `savings/v1/SavingsAccountStayedLockedDataV1.avsc` | `SavingsAccountStayedLockedDataV1` | `id`, `externalId`, `accountNo` |
+| `savings/v1/SavingsAccountsStayedLockedDataV1.avsc` | `SavingsAccountsStayedLockedDataV1` | `savingsAccounts (array<SavingsAccountStayedLockedDataV1>)` |
+| `savings/v1/AccountTransferDataV1.avsc` | `AccountTransferDataV1` | `id`, `reversed`, `currency`, `transferAmount`, `transferDate`, `fromOffice`, `fromClient`, `fromAccountType`, `fromAccount`, `toOffice`, `toClient`, `toAccountType`, `toAccount` |
+
+---
+
+### Client Domain — `client/v1/` (3 schemas)
+
+| Schema File | Record Name | Key Fields |
+|-------------|-------------|------------|
+| `client/v1/ClientDataV1.avsc` | `ClientDataV1` | `id`, `accountNo`, `externalId`, `status`, `active`, `activationDate`, `firstname`, `middlename`, `lastname`, `fullname`, `displayName`, `mobileNo`, `emailAddress`, `dateOfBirth`, `gender`, `officeId`, `officeName`, `staffId`, `savingsAccountId`, `legalForm`, `clientCollateralManagements`, `groups` |
+| `client/v1/ClientTimelineDataV1.avsc` | `ClientTimelineDataV1` | `submittedOnDate`, `activatedOnDate`, `closedOnDate`, plus `*ByUsername` / `*ByFirstname` / `*ByLastname` fields |
+| `client/v1/ClientCollateralManagementV1.avsc` | `ClientCollateralManagementDataV1` | `quantity`, `id`, `pctToBase`, `unitPrice`, `total`, `totalCollateral`, `name` |
+
+---
+
+### Group Domain — `group/v1/` (2 schemas)
+
+| Schema File | Record Name | Key Fields |
+|-------------|-------------|------------|
+| `group/v1/GroupGeneralDataV1.avsc` | `GroupGeneralDataV1` | `id`, `accountNo`, `name`, `externalId`, `status`, `active`, `activationDate`, `officeId`, `officeName`, `centerId`, `staffId`, `hierarchy`, `groupLevel`, `groupRoles`, `calendarsData`, `collectionMeetingCalendar` |
+| `group/v1/GroupRoleDataV1.avsc` | `GroupRoleDataV1` | `id`, `role (CodeValueDataV1)`, `clientId`, `clientName` |
+
+---
+
+### Fixed Deposit Domain — `fixeddeposit/v1/` (1 schema)
+
+| Schema File | Record Name | Key Fields |
+|-------------|-------------|------------|
+| `fixeddeposit/v1/FixedDepositAccountDataV1.avsc` | `FixedDepositAccountDataV1` | `id`, `accountNo`, `externalId`, `clientId`, `depositProductId`, `status`, `currency`, `depositAmount`, `maturityAmount`, `maturityDate`, `depositPeriod`, `preClosurePenalApplicable`, `summary`, `transactions`, `charges`, `linkedAccount`, `transferInterestToSavings` |
+
+---
+
+### Recurring Deposit Domain — `recurringdeposit/v1/` (1 schema)
+
+| Schema File | Record Name | Key Fields |
+|-------------|-------------|------------|
+| `recurringdeposit/v1/RecurringDepositAccountDataV1.avsc` | `RecurringDepositAccountDataV1` | `id`, `accountNo`, `externalId`, `clientId`, `depositProductId`, `status`, `currency`, `depositAmount`, `maturityAmount`, `maturityDate`, `mandatoryRecommendedDepositAmount`, `isMandatoryDeposit`, `allowWithdrawal`, `recurringFrequency`, `recurringFrequencyType` |
+
+---
+
+### Share Domain — `share/v1/` (7 schemas)
+
+| Schema File | Record Name | Key Fields |
+|-------------|-------------|------------|
+| `share/v1/ShareAccountDataV1.avsc` | `ShareAccountDataV1` | `id`, `accountNo`, `externalId`, `clientId`, `clientName`, `productId`, `defaultShares`, `status`, `currency`, `summary`, `purchasedShares`, `currentMarketPrice`, `lockinPeriod`, `minimumActivePeriod` |
+| `share/v1/ShareProductDataV1.avsc` | `ShareProductDataV1` | `id`, `name`, `shortName`, `externalId`, `currency`, `totalShares`, `totalSharesIssued`, `unitPrice`, `shareCapital`, `marketPrice`, `charges` |
+| `share/v1/ShareProductMarketPriceDataV1.avsc` | `ShareProductMarketPriceDataV1` | `id`, `fromDate`, `shareValue` |
+| `share/v1/ShareAccountTransactionDataV1.avsc` | `ShareAccountTransactionDataV1` | `id`, `accountId`, `purchasedDate`, `numberOfShares`, `purchasedPrice`, `status`, `type`, `amount`, `amountPaid` |
+| `share/v1/ShareAccountSummaryDataV1.avsc` | `ShareAccountSummaryDataV1` | `id`, `accountNo`, `totalApprovedShares`, `totalPendingForApprovalShares`, `externalId`, `productId`, `status`, `currency` |
+| `share/v1/ShareAccountStatusEnumDataV1.avsc` | `ShareAccountStatusEnumDataV1` | `id`, `code`, `value`, `submittedAndPendingApproval`, `approved`, `rejected`, `active`, `closed` |
+| `share/v1/ShareAccountApplicationTimelineDataV1.avsc` | `ShareAccountApplicationTimelineDataV1` | `submittedOnDate`, `approvedDate`, `activatedDate`, `closedDate`, plus `*ByUsername` fields |
+
+---
+
+### GL / Accounting Domain — `gl/v1/` (1 schema)
+
+| Schema File | Record Name | Key Fields |
+|-------------|-------------|------------|
+| `gl/v1/GLAccountDataV1.avsc` | `GLAccountDataV1` | `id`, `name`, `parentId`, `glCode`, `disabled`, `manualEntriesAllowed`, `type (EnumOptionDataV1)`, `usage (EnumOptionDataV1)`, `description`, `nameDecorated`, `tagId`, `organizationRunningBalance` |
+
+---
+
+### Document Domain — `document/v1/` (1 schema)
+
+| Schema File | Record Name | Key Fields |
+|-------------|-------------|------------|
+| `document/v1/DocumentDataV1.avsc` | `DocumentDataV1` | `id`, `parentEntityType`, `parentEntityId`, `name`, `fileName`, `size`, `type`, `description`, `storageType` |
+
+---
+
+### Office Domain — `office/v1/` (1 schema)
+
+| Schema File | Record Name | Key Fields |
+|-------------|-------------|------------|
+| `office/v1/OfficeDataV1.avsc` | `OfficeDataV1` | `id`, `name`, `nameDecorated`, `externalId`, `openingDate`, `hierarchy`, `parentId`, `parentName`, `allowedParents` |
+
+---
+
+### Payment Domain — `payment/v1/` (2 schemas)
+
+| Schema File | Record Name | Key Fields |
+|-------------|-------------|------------|
+| `payment/v1/PaymentDetailDataV1.avsc` | `PaymentDetailDataV1` | `id`, `paymentType (PaymentTypeDataV1)`, `accountNumber`, `checkNumber`, `routingCode`, `receiptNumber`, `bankNumber` |
+| `payment/v1/PaymentTypeDataV1.avsc` | `PaymentTypeDataV1` | `id`, `name`, `description`, `isCashPayment`, `position`, `codeName`, `isSystemDefined` |
+
+---
+
+### Portfolio Domain — `portfolio/v1/` (3 schemas)
+
+| Schema File | Record Name | Key Fields |
+|-------------|-------------|------------|
+| `portfolio/v1/ChargeDataV1.avsc` | `ChargeDataV1` | `id`, `name`, `active`, `penalty`, `currency`, `amount`, `chargeTimeType`, `chargeAppliesTo`, `chargeCalculationType`, `chargePaymentMode`, `feeOnMonthDay`, `incomeOrLiabilityAccount` |
+| `portfolio/v1/PortfolioAccountDataV1.avsc` | `PortfolioAccountDataV1` | `id`, `accountNo`, `externalId`, `clientId`, `clientName`, `productId`, `currency`, `amtForTransfer` |
+| `portfolio/v1/RateDataV1.avsc` | `RateDataV1` | `id`, `name`, `percentage`, `productApply`, `active` |
+
+---
+
+### Generic / Shared Domain — `generic/v1/` (6 schemas)
+
+| Schema File | Record Name | Key Fields |
+|-------------|-------------|------------|
+| `generic/v1/EnumOptionDataV1.avsc` | `EnumOptionDataV1` | `id (long)`, `code (string)`, `value (string)` |
+| `generic/v1/StringEnumOptionDataV1.avsc` | `StringEnumOptionDataV1` | `id (string)`, `code (string)`, `value (string)` |
+| `generic/v1/CurrencyDataV1.avsc` | `CurrencyDataV1` | `code`, `name`, `decimalPlaces`, `inMultiplesOf`, `displaySymbol`, `nameCode`, `displayLabel` |
+| `generic/v1/CodeValueDataV1.avsc` | `CodeValueDataV1` | `id`, `name`, `position`, `description`, `active`, `mandatory` |
+| `generic/v1/CalendarDataV1.avsc` | `CalendarDataV1` | `id`, `calendarInstanceId`, `entityId`, `entityType`, `title`, `startDate`, `endDate`, `recurrence`, `frequency`, `interval`, `repeatsOnDay`, `humanReadable`, `recurringDates`, `nextTenRecurringDates` |
+| `generic/v1/CommandProcessingResultV1.avsc` | `CommandProcessingResultV1` | `commandId`, `officeId`, `groupId`, `clientId`, `loanId`, `savingsId`, `resourceId`, `subResourceId`, `transactionId`, `productId` |
+
+---
+
+### Working Capital Loan — `workingcapitalloan/v1/` (1 schema)
+
+| Schema File | Record Name | Key Fields |
+|-------------|-------------|------------|
+| `workingcapitalloan/v1/WorkingCapitalLoanTransactionDataV1.avsc` | `WorkingCapitalLoanTransactionDataV1` | `id`, `wcLoanId`, `type`, `transactionDate`, `submittedOnDate`, `transactionAmount`, `paymentDetailData`, `classification`, `externalId`, `reversed`, `reversalExternalId`, `reversedOnDate`, `principalPortion`, `feeChargesPortion`, `penaltyChargesPortion` |
+
+---
+
+## Serialization Flow
+
+The `ExternalEventService` class at
+`fineract-core/src/main/java/org/apache/fineract/infrastructure/event/external/service/ExternalEventService.java`
+is the single entry point for all event serialization.
+
+```
+BusinessEvent<T>
+  └─► ExternalEventService.postEvent()
+        ├─► entityManager.flush()           // ensure DB state is committed
+        ├─► BusinessEventSerializerFactory.create(event)
+        │     └─► BusinessEventSerializer.toAvroDTO(event)  // domain-specific, returns ByteBufferSerializable
+        ├─► DataEnricherProcessor.enrich(avroDto)           // adds customData / originators
+        ├─► avroDto.toByteBuffer()                          // Avro binary serialization (no registry call)
+        ├─► ByteBufferConverter.convert(buffer)             // ByteBuffer → byte[]
+        └─► ExternalEventRepository.save(ExternalEvent)     // persisted to m_external_event
+```
+
+For bulk events (`BulkBusinessEvent`), `handleBulkBusinessEvent` iterates each child event,
+calls `BulkMessageItemFactory.createBulkMessageItem`, and wraps everything in
+`BulkMessagePayloadV1` before serialization.
+
+The `ExternalEventProducer` interface (`ExternalEventProducer.java`) defines
+`sendEvents(Map<Long, List<byte[]>> partitions)` — the transport-layer abstraction that
+Kafka/ActiveMQ implementations fulfill. `NoopExternalEventProducer` is the default when
+no message broker is configured.
+
+---
+
+## Schema Registry Decision
+
+<Info>
+Fineract does **not** use a schema registry (e.g. Confluent Schema Registry). Instead, the
+`dataschema` field in `MessageV1` carries the fully-qualified Java class name of the payload
+schema (e.g. `org.apache.fineract.avro.loan.v1.LoanAccountDataV1`). Consumers resolve the
+`SpecificRecord` class from the `fineract-avro-schemas` JAR on their classpath using
+`Class.forName(dataschema)` and call the static `fromByteBuffer(ByteBuffer)` Avro method.
+</Info>
+
+---
+
+## Gotchas and Invariants
+
+<Warning>
+All `bigdecimal` type tokens in `.avsc` files are preprocessed to the full `{ "logicalType": "decimal", "precision": 27, "scale": 8, "type": "bytes" }` definition before compilation. Do not put the actual Avro decimal definition inline — always use `"bigdecimal"` as a placeholder so the template can expand it uniformly.
+</Warning>
+
+- All schemas use **nullable union types** (`["null", "actualType"]`) with `"default": null` for every optional field. Required fields in envelope schemas (`MessageV1`, `BulkMessageItemV1`) use non-nullable scalar types.
+- The `originators` field (type `array<OriginatorDetailsV1>`) appears on `LoanAccountDataV1`, `LoanTransactionDataV1`, `LoanChargeDataV1`, `LoanRepaymentDueDataV1`, `LoanAccountDelinquencyRangeDataV1`, and `WorkingCapitalLoanTransactionDataV1` — it links a loan/transaction to the funding originator chain.
+- The `customData` field (type `map<bytes>`) appears on most primary data records, allowing event consumers to extend payloads without schema changes.
+- `EnumOptionDataV1` uses `id: long`, while `StringEnumOptionDataV1` uses `id: string` — these are distinct types, not polymorphic.

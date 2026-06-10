@@ -1,0 +1,516 @@
+---
+title: "External Events: Kafka & JMS Pipeline (Fineract)"
+sidebarTitle: "External Events"
+description: "Deep-dive into Fineract's asynchronous external event pipeline: ExternalEvent entity, Avro serialization, Kafka/JMS producers, scheduled jobs, and all 130+ configurable event types."
+---
+
+Apache Fineract's external event subsystem provides a durable, asynchronous outbound messaging pipeline that serializes every significant business action into an Avro-encoded message and delivers it to either an Apache Kafka topic or an ActiveMQ/JMS destination. Events are persisted in the `m_external_event` table before dispatch so that nothing is lost even if the message broker is temporarily unreachable; a scheduled Spring Batch job then picks them up in batches and forwards them.
+
+## Module Overview
+
+<CardGroup cols={2}>
+  <Card title="Core Module" icon="cube">
+    `fineract-core` — entity, service, jobs, config interfaces  
+    Package: `org.apache.fineract.infrastructure.event.external`
+  </Card>
+  <Card title="Provider Module" icon="plug">
+    `fineract-provider` — Kafka/JMS producer implementations  
+    Package: `org.apache.fineract.infrastructure.event.external.producer`
+  </Card>
+</CardGroup>
+
+## File Inventory
+
+| File | Responsibility |
+|------|---------------|
+| `fineract-core/.../event/external/repository/domain/ExternalEvent.java` | JPA entity for `m_external_event` |
+| `fineract-core/.../event/external/repository/domain/ExternalEventStatus.java` | Status enum |
+| `fineract-core/.../event/external/repository/domain/ExternalEventConfiguration.java` | Per-event-type toggle entity (`m_external_event_configuration`) |
+| `fineract-core/.../event/external/repository/domain/ExternalEventView.java` | Read-only projection used by the batch job |
+| `fineract-core/.../event/external/repository/ExternalEventRepository.java` | JPA repository; `findByStatusOrderByBusinessDateAscIdAsc`, `markEventsSent`, `deleteOlderEventsWithSentStatus` |
+| `fineract-core/.../event/external/repository/ExternalEventConfigurationRepository.java` | JPA repository with `findExternalEventConfigurationByTypeWithNotFoundDetection` |
+| `fineract-core/.../event/external/service/ExternalEventService.java` | Core service; `postEvent(BusinessEvent<T>)` |
+| `fineract-core/.../event/external/service/idempotency/DefaultExternalEventIdempotencyKeyGenerator.java` | Default UUID-based idempotency key generator |
+| `fineract-core/.../event/external/service/idempotency/ExternalEventIdempotencyKeyGenerator.java` | Interface for key generation strategy |
+| `fineract-core/.../event/external/service/serialization/serializer/BusinessEventSerializer.java` | Interface: `canSerialize`, `getSupportedSchema`, `toAvroDTO` |
+| `fineract-core/.../event/external/service/serialization/serializer/BusinessEventSerializerFactory.java` | Looks up the correct serializer for a given event |
+| `fineract-core/.../event/external/service/message/MessageFactory.java` | Wraps payload bytes in a `MessageV1` envelope |
+| `fineract-core/.../event/external/service/message/BulkMessageItemFactory.java` | Builds individual `BulkMessageItemV1` items |
+| `fineract-core/.../event/external/service/support/ByteBufferConverter.java` | `ByteBuffer → byte[]` |
+| `fineract-core/.../event/external/jobs/SendAsynchronousEventsTasklet.java` | Spring Batch tasklet that reads `TO_BE_SENT` events and dispatches them |
+| `fineract-core/.../event/external/jobs/SendAsynchronousEventsConfig.java` | Job/step bean definitions for the send job |
+| `fineract-core/.../event/external/jobs/PurgeExternalEventsTasklet.java` | Deletes old `SENT` events beyond the retention window |
+| `fineract-core/.../event/external/jobs/PurgeExternalEventsConfig.java` | Job bean definitions for the purge job |
+| `fineract-core/.../event/external/api/ExternalEventConfigurationApiResource.java` | REST resource at `/v1/externalevents/configuration` |
+| `fineract-core/.../event/external/producer/ExternalEventProducer.java` | Producer interface: `sendEvents(Map<Long, List<byte[]>>)` |
+| `fineract-core/.../event/external/producer/NoopExternalEventProducer.java` | No-op when both brokers are disabled |
+| `fineract-provider/.../event/external/producer/kafka/KafkaExternalEventProducer.java` | Kafka implementation |
+| `fineract-provider/.../event/external/config/ExternalEventKafkaConfiguration.java` | Kafka `ProducerFactory` and `KafkaTemplate` beans |
+| `fineract-provider/.../event/external/config/KafkaExternalEventTopicConfig.java` | Auto-creates Kafka topic on startup |
+| `fineract-provider/.../event/external/config/ExternalEventsKafkaTopicAutoCreateCondition.java` | `@Conditional` guard for topic auto-creation |
+| `fineract-provider/.../event/external/producer/jms/JMSMultiExternalEventProducer.java` | JMS/ActiveMQ multi-producer implementation |
+| `fineract-avro-schemas/src/main/avro/MessageV1.avsc` | Outer envelope Avro schema |
+| `fineract-avro-schemas/src/main/avro/BulkMessagePayloadV1.avsc` | Bulk event wrapper |
+| `fineract-avro-schemas/src/main/avro/BulkMessageItemV1.avsc` | Individual item within a bulk event |
+
+---
+
+## Key Abstractions
+
+### `ExternalEvent` Entity (`m_external_event`)
+
+Defined in `ExternalEvent.java`:
+
+| Column | Java Field | Type | Notes |
+|--------|-----------|------|-------|
+| `id` | (inherited) | `Long` | Auto-generated PK |
+| `type` | `type` | `String` | e.g. `LoanApprovedBusinessEvent` |
+| `category` | `category` | `String` | e.g. `LOAN`, `CLIENT`, `SAVINGS` |
+| `schema` | `schema` | `String` | Fully-qualified Avro class name |
+| `data` | `data` | `byte[]` | Avro-serialized payload (LAZY loaded) |
+| `created_at` | `createdAt` | `OffsetDateTime` | Set on construction via `DateUtils.getAuditOffsetDateTime()` |
+| `status` | `status` | `ExternalEventStatus` | Enum: `TO_BE_SENT` initially |
+| `sent_at` | `sentAt` | `OffsetDateTime` | Set when successfully dispatched |
+| `idempotency_key` | `idempotencyKey` | `String` | Consumer deduplication key |
+| `business_date` | `businessDate` | `LocalDate` | Fineract business date at event time |
+| `aggregate_root_id` | `aggregateRootId` | `Long` | Partition key for ordered delivery |
+
+### `ExternalEventStatus` Enum
+
+```java
+// ExternalEventStatus.java
+public enum ExternalEventStatus {
+    TO_BE_SENT,  // Persisted, awaiting batch dispatch
+    SENT         // Successfully forwarded to broker
+}
+```
+
+<Note>There is **no FAILED status** in the current enum. Events that cannot be sent remain as `TO_BE_SENT` and will be retried by the next batch execution. Failed serializations throw a `RuntimeException` that bubbles up to the caller.</Note>
+
+### `ExternalEventConfiguration` Entity (`m_external_event_configuration`)
+
+```java
+// ExternalEventConfiguration.java
+@Entity @Table(name = "m_external_event_configuration")
+public class ExternalEventConfiguration {
+    @Id @Column(name = "type")
+    private String type;       // event class simple name
+    @Column(name = "enabled")
+    private boolean enabled;   // default false
+}
+```
+
+Each row in this table controls whether a specific event type is serialized and persisted. The API at `GET /v1/externalevents/configuration` returns all rows; `PUT` updates them in bulk.
+
+---
+
+## `ExternalEventService`
+
+Located at `fineract-core/.../event/external/service/ExternalEventService.java`.
+
+```java
+public void postEvent(BusinessEvent<T> event)
+```
+
+**Flow:**
+1. Flushes the JPA `EntityManager` so all DB writes are visible.
+2. If `event instanceof BulkBusinessEvent` → builds a `BulkMessagePayloadV1` wrapping all child events.
+3. Otherwise → resolves a `BusinessEventSerializer` via `BusinessEventSerializerFactory.create(event)`, calls `toAvroDTO(event)`, then `DataEnricherProcessor.enrich(dto)`, serializes to bytes.
+4. Calls `ExternalEventIdempotencyKeyGenerator.generate(event)` for a unique key.
+5. Constructs `ExternalEvent(type, category, schema, data, idempotencyKey, aggregateRootId)` — status defaults to `TO_BE_SENT`.
+6. `ExternalEventRepository.save(externalEvent)`.
+
+---
+
+## Idempotency Key Generation
+
+The default implementation `DefaultExternalEventIdempotencyKeyGenerator` simply returns `UUID.randomUUID().toString()` for every event. To override, provide a Spring bean implementing `ExternalEventIdempotencyKeyGenerator` — Spring will prefer any non-default bean.
+
+---
+
+## Avro Serialization
+
+### `MessageV1.avsc` — Outer Envelope
+
+All messages are wrapped in this schema before going onto the broker:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `long` | `ExternalEvent.id` |
+| `source` | `string` | Unique source service identifier |
+| `type` | `string` | Event class name (e.g. `LoanApprovedBusinessEvent`) |
+| `category` | `string` | Domain category (e.g. `LOAN`) |
+| `createdAt` | `string` | ISO_LOCAL_DATE_TIME format |
+| `businessDate` | `string` | ISO_LOCAL_DATE format |
+| `tenantId` | `string` | Fineract tenant identifier |
+| `idempotencyKey` | `string` | Consumer deduplication key |
+| `dataschema` | `string` | Fully-qualified Avro payload class |
+| `data` | `bytes` | Avro-serialized payload bytes |
+
+### `BulkMessagePayloadV1.avsc`
+
+Contains an array of `BulkMessageItemV1` records, each with its own `id`, `type`, `category`, `dataschema`, and `data` fields.
+
+---
+
+## Domain Event Catalogue (All Avro Schemas)
+
+Schemas live in `fineract-avro-schemas/src/main/avro/`. Java classes are generated by the Avro Gradle plugin into `fineract-avro-schemas/build/generated/`.
+
+<Tabs>
+  <Tab title="Loan">
+
+| Schema File | Generated Class | Purpose |
+|-------------|----------------|---------|
+| `loan/v1/LoanAccountDataV1.avsc` | `LoanAccountDataV1` | Full loan snapshot |
+| `loan/v1/LoanTransactionDataV1.avsc` | `LoanTransactionDataV1` | Transaction detail |
+| `loan/v1/LoanChargeDataV1.avsc` | `LoanChargeDataV1` | Charge data |
+| `loan/v1/LoanChargeDeletedV1.avsc` | `LoanChargeDeletedV1` | Charge deletion event |
+| `loan/v1/LoanProductDataV1.avsc` | `LoanProductDataV1` | Product configuration |
+| `loan/v1/LoanScheduleDataV1.avsc` | `LoanScheduleDataV1` | Repayment schedule |
+| `loan/v1/LoanSchedulePeriodDataV1.avsc` | `LoanSchedulePeriodDataV1` | Per-period schedule |
+| `loan/v1/LoanRepaymentDueDataV1.avsc` | `LoanRepaymentDueDataV1` | Upcoming repayment |
+| `loan/v1/CollectionDataV1.avsc` | `CollectionDataV1` | Collection info |
+| `loan/v1/DelinquencyBucketDataV1.avsc` | `DelinquencyBucketDataV1` | Delinquency bucket |
+| `loan/v1/DelinquencyRangeDataV1.avsc` | `DelinquencyRangeDataV1` | Range definition |
+| `loan/v1/LoanAccountDelinquencyRangeDataV1.avsc` | `LoanAccountDelinquencyRangeDataV1` | Loan-level delinquency |
+| `loan/v1/LoanOwnershipTransferDataV1.avsc` | `LoanOwnershipTransferDataV1` | Investor transfer |
+| `loan/v1/LoanTransactionAdjustmentDataV1.avsc` | `LoanTransactionAdjustmentDataV1` | Transaction adjustment |
+| `loan/v1/LoanSummaryDataV1.avsc` | `LoanSummaryDataV1` | Loan summary |
+| `loan/v1/LoanAmountDataV1.avsc` | `LoanAmountDataV1` | Amount breakdown |
+| `loan/v1/LoanAccountStayedLockedDataV1.avsc` | `LoanAccountStayedLockedDataV1` | COB lock event |
+| `loan/v1/LoanAccountsStayedLockedDataV1.avsc` | `LoanAccountsStayedLockedDataV1` | Bulk COB lock |
+
+  </Tab>
+  <Tab title="Savings">
+
+| Schema File | Generated Class | Purpose |
+|-------------|----------------|---------|
+| `savings/v1/SavingsAccountDataV1.avsc` | `SavingsAccountDataV1` | Full savings snapshot |
+| `savings/v1/SavingsAccountTransactionDataV1.avsc` | `SavingsAccountTransactionDataV1` | Transaction detail |
+| `savings/v1/SavingsAccountChargeDataV1.avsc` | `SavingsAccountChargeDataV1` | Charge data |
+| `savings/v1/SavingsAccountSummaryDataV1.avsc` | `SavingsAccountSummaryDataV1` | Account summary |
+| `savings/v1/SavingsAccountStayedLockedDataV1.avsc` | `SavingsAccountStayedLockedDataV1` | COB lock |
+| `savings/v1/SavingsAccountsStayedLockedDataV1.avsc` | `SavingsAccountsStayedLockedDataV1` | Bulk COB lock |
+| `savings/v1/AccountTransferDataV1.avsc` | `AccountTransferDataV1` | Fund transfer |
+
+  </Tab>
+  <Tab title="Client / Groups">
+
+| Schema File | Generated Class | Purpose |
+|-------------|----------------|---------|
+| `client/v1/ClientDataV1.avsc` | `ClientDataV1` | Client profile |
+| `client/v1/ClientCollateralManagementV1.avsc` | `ClientCollateralManagementV1` | Collateral |
+| `group/v1/GroupGeneralDataV1.avsc` | `GroupGeneralDataV1` | Group data |
+| `group/v1/GroupRoleDataV1.avsc` | `GroupRoleDataV1` | Group role |
+
+  </Tab>
+  <Tab title="Fixed / Recurring Deposits">
+
+| Schema File | Generated Class | Purpose |
+|-------------|----------------|---------|
+| `fixeddeposit/v1/FixedDepositAccountDataV1.avsc` | `FixedDepositAccountDataV1` | FD account |
+| `recurringdeposit/v1/RecurringDepositAccountDataV1.avsc` | `RecurringDepositAccountDataV1` | RD account |
+
+  </Tab>
+  <Tab title="Shares / GL / Payment">
+
+| Schema File | Generated Class | Purpose |
+|-------------|----------------|---------|
+| `share/v1/ShareAccountDataV1.avsc` | `ShareAccountDataV1` | Share account |
+| `share/v1/ShareProductDataV1.avsc` | `ShareProductDataV1` | Share product |
+| `gl/v1/GLAccountDataV1.avsc` | `GLAccountDataV1` | GL account |
+| `payment/v1/PaymentDetailDataV1.avsc` | `PaymentDetailDataV1` | Payment details |
+| `payment/v1/PaymentTypeDataV1.avsc` | `PaymentTypeDataV1` | Payment type |
+| `document/v1/DocumentDataV1.avsc` | `DocumentDataV1` | Document metadata |
+| `office/v1/OfficeDataV1.avsc` | `OfficeDataV1` | Office data |
+| `workingcapitalloan/v1/WorkingCapitalLoanTransactionDataV1.avsc` | `WorkingCapitalLoanTransactionDataV1` | WCL transaction |
+
+  </Tab>
+</Tabs>
+
+---
+
+## Configurable Event Types
+
+All event type names in `m_external_event_configuration` correspond to the simple class name of the `BusinessEvent` implementation. The following table lists the complete set of event classes across all modules.
+
+<Accordion title="Loan Events (fineract-loan)">
+
+| Event Class | Category | Trigger |
+|-------------|----------|---------|
+| `LoanApprovedBusinessEvent` | LOAN | Loan approval |
+| `LoanUndoApprovalBusinessEvent` | LOAN | Undo approval |
+| `LoanCreatedBusinessEvent` | LOAN | Application submitted |
+| `LoanApplicationModifiedBusinessEvent` | LOAN | Application modified |
+| `LoanRejectedBusinessEvent` | LOAN | Loan rejection |
+| `LoanWithdrawnByApplicantBusinessEvent` | LOAN | Applicant withdrawal |
+| `LoanDisbursalBusinessEvent` | LOAN | Disbursement |
+| `LoanDisbursalTransactionBusinessEvent` | LOAN | Disbursal transaction |
+| `LoanUndoDisbursalBusinessEvent` | LOAN | Undo disbursal |
+| `LoanUndoLastDisbursalBusinessEvent` | LOAN | Undo last tranche |
+| `LoanRepaymentBusinessEvent` | LOAN | Repayment |
+| `LoanRepaymentDueBusinessEvent` | LOAN | Upcoming repayment due |
+| `LoanRepaymentOverdueBusinessEvent` | LOAN | Overdue repayment |
+| `LoanTransactionMakeRepaymentPreBusinessEvent` | LOAN | Pre-repayment hook |
+| `LoanTransactionMakeRepaymentPostBusinessEvent` | LOAN | Post-repayment hook |
+| `LoanChargebackTransactionBusinessEvent` | LOAN | Chargeback |
+| `LoanCloseBusinessEvent` | LOAN | Loan closure |
+| `LoanCloseAsRescheduleBusinessEvent` | LOAN | Rescheduled closure |
+| `LoanStatusChangedBusinessEvent` | LOAN | Status change |
+| `LoanBalanceChangedBusinessEvent` | LOAN | Balance change |
+| `LoanInterestRecalculationBusinessEvent` | LOAN | Interest recalculation |
+| `LoanDelinquencyRangeChangeBusinessEvent` | LOAN | Delinquency range shift |
+| `LoanAccountDelinquencyPauseChangedBusinessEvent` | LOAN | Delinquency pause |
+| `LoanAccountSnapshotBusinessEvent` | LOAN | Account snapshot |
+| `LoanAccountCustomSnapshotBusinessEvent` | LOAN | Custom snapshot |
+| `LoanAddChargeBusinessEvent` | LOAN | Charge added |
+| `LoanDeleteChargeBusinessEvent` | LOAN | Charge deleted |
+| `LoanUpdateChargeBusinessEvent` | LOAN | Charge updated |
+| `LoanWaiveChargeBusinessEvent` | LOAN | Charge waived |
+| `LoanWaiveChargeUndoBusinessEvent` | LOAN | Charge waive undo |
+| `LoanWaiveInterestBusinessEvent` | LOAN | Interest waived |
+| `LoanApplyOverdueChargeBusinessEvent` | LOAN | Overdue charge applied |
+| `LoanWrittenOffPreBusinessEvent` | LOAN | Pre write-off hook |
+| `LoanWrittenOffPostBusinessEvent` | LOAN | Post write-off |
+| `LoanUndoWrittenOffBusinessEvent` | LOAN | Write-off undo |
+| `LoanChargeOffPreBusinessEvent` | LOAN | Pre charge-off |
+| `LoanChargeOffPostBusinessEvent` | LOAN | Post charge-off |
+| `LoanUndoChargeOffBusinessEvent` | LOAN | Charge-off undo |
+| `LoanForeClosurePreBusinessEvent` | LOAN | Pre foreclosure |
+| `LoanForeClosurePostBusinessEvent` | LOAN | Post foreclosure |
+| `LoanRescheduledDueHolidayBusinessEvent` | LOAN | Holiday reschedule |
+| `LoanRescheduledDueCalendarChangeBusinessEvent` | LOAN | Calendar reschedule |
+| `LoanRescheduledDueAdjustScheduleBusinessEvent` | LOAN | Manual reschedule |
+| `LoanScheduleVariationsAddedBusinessEvent` | LOAN | Schedule variation |
+| `LoanScheduleVariationsDeletedBusinessEvent` | LOAN | Variation deleted |
+| `LoanUpdateDisbursementDataBusinessEvent` | LOAN | Disbursement data updated |
+| `LoanReAgeBusinessEvent` | LOAN | Re-age |
+| `LoanUndoReAgeBusinessEvent` | LOAN | Re-age undo |
+| `LoanReAmortizeBusinessEvent` | LOAN | Re-amortize |
+| `LoanUndoReAmortizeBusinessEvent` | LOAN | Re-amortize undo |
+| `LoanAccrualTransactionCreatedBusinessEvent` | LOAN | Accrual transaction |
+| `LoanAccrualAdjustmentTransactionBusinessEvent` | LOAN | Accrual adjustment |
+| `LoanTransactionMerchantIssuedRefundPreBusinessEvent` | LOAN | Merchant refund pre |
+| `LoanTransactionMerchantIssuedRefundPostBusinessEvent` | LOAN | Merchant refund post |
+| `LoanTransactionPayoutRefundPreBusinessEvent` | LOAN | Payout refund pre |
+| `LoanTransactionPayoutRefundPostBusinessEvent` | LOAN | Payout refund post |
+| `LoanTransactionGoodwillCreditPreBusinessEvent` | LOAN | Goodwill credit pre |
+| `LoanTransactionGoodwillCreditPostBusinessEvent` | LOAN | Goodwill credit post |
+| `LoanTransactionInterestPaymentWaiverPreBusinessEvent` | LOAN | Interest waiver pre |
+| `LoanTransactionInterestPaymentWaiverPostBusinessEvent` | LOAN | Interest waiver post |
+| `LoanTransactionInterestRefundPreBusinessEvent` | LOAN | Interest refund pre |
+| `LoanTransactionInterestRefundPostBusinessEvent` | LOAN | Interest refund post |
+| `LoanTransactionDownPaymentPreBusinessEvent` | LOAN | Down payment pre |
+| `LoanTransactionDownPaymentPostBusinessEvent` | LOAN | Down payment post |
+| `LoanCreditBalanceRefundPreBusinessEvent` | LOAN | Credit balance refund pre |
+| `LoanCreditBalanceRefundPostBusinessEvent` | LOAN | Credit balance refund post |
+| `LoanRefundPreBusinessEvent` | LOAN | Refund pre |
+| `LoanRefundPostBusinessEvent` | LOAN | Refund post |
+| `LoanChargePaymentPreBusinessEvent` | LOAN | Charge payment pre |
+| `LoanChargePaymentPostBusinessEvent` | LOAN | Charge payment post |
+| `LoanChargeRefundBusinessEvent` | LOAN | Charge refund |
+| `LoanChargeAdjustmentPreBusinessEvent` | LOAN | Charge adjustment pre |
+| `LoanChargeAdjustmentPostBusinessEvent` | LOAN | Charge adjustment post |
+| `LoanOwnershipTransferBusinessEvent` (investor module) | LOAN | Ownership transfer |
+| `LoanAccountsStayedLockedBusinessEvent` | LOAN | COB locked accounts |
+| `LoanJournalEntryCreatedBusinessEvent` | LOAN | Journal entry |
+| `LoanApprovedAmountChangedBusinessEvent` | LOAN | Approved amount change |
+| `LoanReassignOfficerBusinessEvent` | LOAN | Officer reassignment |
+| `LoanRemoveOfficerBusinessEvent` | LOAN | Officer removal |
+
+</Accordion>
+
+<Accordion title="Savings / Deposit / Share Events">
+
+| Event Class | Category | Trigger |
+|-------------|----------|---------|
+| `SavingsCreateBusinessEvent` | SAVINGS | Account created |
+| `SavingsApproveBusinessEvent` | SAVINGS | Account approved |
+| `SavingsActivateBusinessEvent` | SAVINGS | Account activated |
+| `SavingsCloseBusinessEvent` | SAVINGS | Account closed |
+| `SavingsRejectBusinessEvent` | SAVINGS | Application rejected |
+| `SavingsPostInterestBusinessEvent` | SAVINGS | Interest posted |
+| `SavingsDepositBusinessEvent` | SAVINGS | Deposit |
+| `SavingsWithdrawalBusinessEvent` | SAVINGS | Withdrawal |
+| `SavingsAccountForceWithdrawalBusinessEvent` | SAVINGS | Force withdrawal |
+| `SavingsAccountsStayedLockedBusinessEvent` | SAVINGS | COB locked |
+| `FixedDepositAccountCreateBusinessEvent` | DEPOSIT | FD created |
+| `RecurringDepositAccountCreateBusinessEvent` | DEPOSIT | RD created |
+| `ShareAccountCreateBusinessEvent` | SHARE | Share account created |
+| `ShareAccountApproveBusinessEvent` | SHARE | Share account approved |
+| `ShareProductDividentsCreateBusinessEvent` | SHARE | Dividend declared |
+
+</Accordion>
+
+<Accordion title="Client / Group / Product Events">
+
+| Event Class | Category | Trigger |
+|-------------|----------|---------|
+| `ClientCreateBusinessEvent` | CLIENT | Client created |
+| `ClientActivateBusinessEvent` | CLIENT | Client activated |
+| `ClientRejectBusinessEvent` | CLIENT | Client rejected |
+| `CentersCreateBusinessEvent` | CENTER | Center created |
+| `GroupsCreateBusinessEvent` | GROUP | Group created |
+| `LoanProductCreateBusinessEvent` | LOAN_PRODUCT | Product created |
+
+</Accordion>
+
+<Accordion title="Generic / Document / Datatable Events">
+
+| Event Class | Category | Trigger |
+|-------------|----------|---------|
+| `DocumentCreatedBusinessEvent` | DOCUMENT | Document uploaded |
+| `DocumentDeletedBusinessEvent` | DOCUMENT | Document deleted |
+| `DatatableEntryCreatedBusinessEvent` | DATATABLE | Datatable row created |
+| `DatatableEntryUpdatedBusinessEvent` | DATATABLE | Datatable row updated |
+| `DatatableEntryDeletedBusinessEvent` | DATATABLE | Datatable row deleted |
+| `JournalEntryBusinessEvent` | ACCOUNTING | GL journal entry |
+
+</Accordion>
+
+---
+
+## Configuration API
+
+### `ExternalEventConfigurationApiResource`
+
+Path: `@Path("/v1/externalevents/configuration")`  
+File: `fineract-core/.../event/external/api/ExternalEventConfigurationApiResource.java`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/externalevents/configuration` | Returns all `ExternalEventConfigurationItemResponse` objects |
+| `PUT` | `/v1/externalevents/configuration` | Bulk enable/disable event types; body: `ExternalEventConfigurationUpdateRequest` |
+
+The `PUT` body uses `ExternalEventConfigurationUpdateRequest` (list of `{type, enabled}` pairs). The update handler is `ExternalEventConfigurationUpdateHandler`.
+
+---
+
+## Scheduled Jobs
+
+### `SendAsynchronousEventsTasklet`
+
+File: `fineract-core/.../event/external/jobs/SendAsynchronousEventsTasklet.java`
+
+1. Checks that at least one producer (JMS or Kafka) is enabled via `isDownstreamChannelEnabled()`.
+2. Calls `ExternalEventRepository.findByStatusOrderByBusinessDateAscIdAsc(TO_BE_SENT, PageRequest.ofSize(batchSize))` — batch size read from `ConfigurationDomainService.retrieveExternalEventBatchSize()`.
+3. Groups events by `aggregateRootId` to form ordered partitions. Null `aggregateRootId` maps to key `-1L`.
+4. Each partition is serialized into `MessageV1` bytes via `MessageFactory.createMessage(ExternalEventView)`.
+5. `ExternalEventProducer.sendEvents(Map<Long, List<byte[]>>)` dispatches all partitions.
+6. `repository.markEventsSent(eventIds, sentAt)` updates status to `SENT` — executed in parallel via `ThreadPoolTaskExecutor` (bean: `EVENT_MARKS_AS_SENT_EXECUTOR_BEAN_NAME`) to avoid the 65,535 SQL parameter limit when using batch partitioning via `fineract.events.external.partition-size`.
+
+### `PurgeExternalEventsTasklet`
+
+File: `fineract-core/.../event/external/jobs/PurgeExternalEventsTasklet.java`
+
+Reads `ConfigurationDomainService.retrieveExternalEventsPurgeDaysCriteria()` to determine the retention window, then calls `repository.deleteOlderEventsWithSentStatus(SENT, cutoffDate)`.
+
+---
+
+## Kafka Producer
+
+File: `fineract-provider/.../event/external/producer/kafka/KafkaExternalEventProducer.java`
+
+- Active when `fineract.events.external.producer.kafka.enabled=true`.
+- Uses `KafkaTemplate<Long, byte[]>` — key serializer: `LongSerializer`, value serializer: `ByteArraySerializer`.
+- Kafka key is `aggregateRootId` — ensures ordered delivery per aggregate root.
+- Sends all messages as `CompletableFuture` and waits for `allOf` within `kafkaProperties.getTimeoutInSeconds()`.
+- Topic configuration bean: `KafkaExternalEventTopicConfig` with `@Conditional(ExternalEventsKafkaTopicAutoCreateCondition.class)`.
+- `ExternalEventKafkaConfiguration` provides `externalEventsProducerFactory` and `externalEventsKafkaTemplate` beans.
+
+## JMS/ActiveMQ Producer
+
+File: `fineract-provider/.../event/external/producer/jms/JMSMultiExternalEventProducer.java`
+
+- Active when `fineract.events.external.producer.jms.enabled=true`.
+- Uses `producerCount` (default 1) parallel JMS `MessageProducer` objects from a `CachingConnectionFactory`.
+- Consistent hashing via `HashingService.consistentHash(aggregateRootId, producerCount)` maps partitions to producers.
+- Creates byte messages via `MessageFactory.createByteMessage(bytes)`.
+- Sessions are explicitly closed after send to prevent orphan session leaks from `CachingConnectionFactory`.
+
+---
+
+## Pipeline Data Flow
+
+```mermaid
+flowchart TD
+    A[Business Service calls\nBusinessEventNotifierService.notify()] --> B[ExternalEventService.postEvent()]
+    B --> C{BulkBusinessEvent?}
+    C -- Yes --> D[BulkMessageItemFactory\nbuilds BulkMessagePayloadV1]
+    C -- No --> E[BusinessEventSerializerFactory\nresolves serializer]
+    E --> F[toAvroDTO → DataEnricherProcessor.enrich]
+    F --> G[ByteBufferConverter → byte[]]
+    D --> H[ExternalEventRepository.save\nstatus=TO_BE_SENT]
+    G --> H
+    H --> I[(m_external_event DB)]
+
+    I --> J[SendAsynchronousEventsTasklet\nSpring Batch Job]
+    J --> K[findByStatusOrderByBusinessDateAscIdAsc\nbatch page]
+    K --> L[MessageFactory.createMessage\nwraps in MessageV1]
+    L --> M{Producer}
+    M -- Kafka --> N[KafkaExternalEventProducer\nsend with aggregateRootId key]
+    M -- JMS --> O[JMSMultiExternalEventProducer\nconsistent hash routing]
+    N --> P[markEventsSent]
+    O --> P
+    P --> I
+
+    I --> Q[PurgeExternalEventsTasklet\ndeletes old SENT events]
+```
+
+---
+
+## `application.properties` Reference
+
+All properties are in `fineract-provider/src/main/resources/application.properties`.
+
+| Property | Env Variable | Default | Description |
+|----------|-------------|---------|-------------|
+| `fineract.events.external.enabled` | `FINERACT_EXTERNAL_EVENTS_ENABLED` | `false` | Master switch for external events |
+| `fineract.events.external.partition-size` | `FINERACT_EXTERNAL_EVENTS_PARTITION_SIZE` | `5000` | Max IDs per `markEventsSent` batch |
+| `fineract.events.external.thread-pool-core-pool-size` | `FINERACT_EVENT_TASK_EXECUTOR_CORE_POOL_SIZE` | `2` | Thread pool core size |
+| `fineract.events.external.thread-pool-max-pool-size` | `FINERACT_EVENT_TASK_EXECUTOR_MAX_POOL_SIZE` | `25` | Thread pool max size |
+| `fineract.events.external.thread-pool-queue-capacity` | `FINERACT_EVENT_TASK_EXECUTOR_QUEUE_CAPACITY` | `500` | Thread pool queue depth |
+| **JMS** | | | |
+| `fineract.events.external.producer.jms.enabled` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_ENABLED` | `false` | Enable JMS producer |
+| `fineract.events.external.producer.jms.async-send-enabled` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_ASYNC_SEND_ENABLED` | `false` | Async JMS send |
+| `fineract.events.external.producer.jms.event-queue-name` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_QUEUE_NAME` | `""` | JMS queue name |
+| `fineract.events.external.producer.jms.event-topic-name` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_TOPIC_NAME` | `""` | JMS topic name |
+| `fineract.events.external.producer.jms.broker-url` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_BROKER_URL` | `tcp://127.0.0.1:61616` | ActiveMQ broker URL |
+| `fineract.events.external.producer.jms.broker-username` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_BROKER_USERNAME` | `""` | Broker username |
+| `fineract.events.external.producer.jms.broker-password` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_BROKER_PASSWORD` | `""` | Broker password |
+| `fineract.events.external.producer.jms.producer-count` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_PRODUCER_COUNT` | `1` | Parallel JMS producers |
+| `fineract.events.external.producer.jms.thread-pool-task-executor-core-pool-size` | `FINERACT_EVENT_TASK_EXECUTOR_CORE_POOL_SIZE` | `10` | JMS thread pool core |
+| `fineract.events.external.producer.jms.thread-pool-task-executor-max-pool-size` | `FINERACT_EVENT_TASK_EXECUTOR_MAX_POOL_SIZE` | `100` | JMS thread pool max |
+| **Kafka** | | | |
+| `fineract.events.external.producer.kafka.enabled` | `FINERACT_EXTERNAL_EVENTS_KAFKA_ENABLED` | `false` | Enable Kafka producer |
+| `fineract.events.external.producer.kafka.timeout-in-seconds` | `FINERACT_EXTERNAL_EVENTS_KAFKA_TIMEOUT_IN_SECONDS` | `10` | Kafka send timeout |
+| `fineract.events.external.producer.kafka.topic.auto-create` | `FINERACT_EXTERNAL_EVENTS_KAFKA_TOPIC_AUTO_CREATE` | `true` | Auto-create topic |
+| `fineract.events.external.producer.kafka.topic.name` | `FINERACT_EXTERNAL_EVENTS_KAFKA_TOPIC_NAME` | `external-events` | Topic name |
+| `fineract.events.external.producer.kafka.topic.replicas` | `FINERACT_EXTERNAL_EVENTS_KAFKA_TOPIC_REPLICAS` | `1` | Replication factor |
+| `fineract.events.external.producer.kafka.topic.partitions` | `FINERACT_EXTERNAL_EVENTS_KAFKA_TOPIC_PARTITIONS` | `10` | Partition count |
+| `fineract.events.external.producer.kafka.bootstrap-servers` | `FINERACT_EXTERNAL_EVENTS_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka brokers |
+| `fineract.events.external.producer.kafka.producer.extra-properties` | `FINERACT_EXTERNAL_EVENTS_KAFKA_PRODUCER_EXTRA_PROPERTIES` | `linger.ms=10\|batch.size=16384` | Additional producer props |
+| `fineract.events.external.producer.kafka.producer.extra-properties-separator` | `FINERACT_EXTERNAL_EVENTS_KAFKA_PRODUCER_EXTRA_PROPERTIES_SEPARATOR` | `\|` | Separator character |
+| `fineract.events.external.producer.kafka.producer.extra-properties-key-value-separator` | `FINERACT_EXTERNAL_EVENTS_KAFKA_PRODUCER_EXTRA_PROPERTIES_KEY_VALUE_SEPARATOR` | `=` | KV separator |
+| `fineract.events.external.producer.kafka.admin.extra-properties` | `FINERACT_EXTERNAL_EVENTS_KAFKA_ADMIN_EXTRA_PROPERTIES` | `""` | Admin client extra props |
+
+---
+
+## Gotchas & Invariants
+
+<Warning>
+**Both JMS and Kafka can be enabled simultaneously.** `SendAsynchronousEventsTasklet.isDownstreamChannelEnabled()` returns true if *either* is enabled. However, only the active producer bean is wired — a Kafka and JMS producer cannot both be active at the same time in practice because the `@ConditionalOnProperty` guards are mutually exclusive per producer bean.
+</Warning>
+
+<Warning>
+**Partition size guard for SQL.** When marking events as sent, the code splits event IDs into chunks of `fineract.events.external.partition-size` (default 5000) to avoid hitting the 65,535 PreparedStatement parameter limit on some JDBC drivers.
+</Warning>
+
+<Note>
+**`aggregateRootId` = null maps to -1L** as the Kafka partition key. All events without an aggregate root (e.g. bulk events) are sent on the same partition, which may be a bottleneck under high load.
+</Note>
+
+<Tip>
+**Enabling an event type** requires a `PUT /v1/externalevents/configuration` call with `enabled: true` for the specific type name. All types default to `false` in `m_external_event_configuration` on first boot.
+</Tip>

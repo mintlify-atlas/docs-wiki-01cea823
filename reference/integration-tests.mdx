@@ -1,0 +1,329 @@
+---
+title: "Fineract Integration Tests: Structure and Execution"
+sidebarTitle: "Integration Tests"
+description: "Deep reference for the integration-tests module: bootstrapping, RestAssured patterns, test base classes, helper inventory, major test files, and the oauth2/twofactor sub-modules."
+---
+
+The `integration-tests` Gradle subproject contains over 265 test classes that exercise the Fineract REST API end-to-end against a running server. Tests make real HTTP calls (via RestAssured), manipulate tenants, create financial entities, and assert both API responses and database state. They are not unit tests — they require a fully started Fineract instance and an initialized database.
+
+## Responsibility
+
+| What it tests | How |
+|---|---|
+| Loan lifecycle (create, approve, disburse, repay, close) | REST API via `io.rest-assured` |
+| Savings account operations | REST API |
+| COB (Close-of-Business) job execution | Trigger via scheduler API, poll for completion |
+| Accounting journal entries | Query journal entry API after transactions |
+| Security (BasicAuth, 2FA, OAuth2) | Separate sub-modules (`twofactor-tests`, `oauth2-tests`) |
+| External events (Avro / Kafka / JMS) | Assert events after API operations |
+| Batch API | Multi-operation atomic batch requests |
+| Scheduler jobs | Trigger and await job completion |
+
+---
+
+## Test Environment Bootstrap
+
+Tests connect to a running Fineract instance. Connection parameters are read from `ConfigProperties.java`:
+
+**File:** `integration-tests/src/test/java/org/apache/fineract/integrationtests/ConfigProperties.java`
+
+```java
+public class ConfigProperties {
+    public static class Backend {
+        public static final String PROTOCOL = getValueFromEnvOrDefault("BACKEND_PROTOCOL", "https");
+        public static final String HOST     = getValueFromEnvOrDefault("BACKEND_HOST", "localhost");
+        public static final Integer PORT    = Integer.parseInt(getValueFromEnvOrDefault("BACKEND_PORT", "8443"));
+        public static final String USERNAME = getValueFromEnvOrDefault("BACKEND_USERNAME", "mifos");
+        public static final String PASSWORD = getValueFromEnvOrDefault("BACKEND_PASSWORD", "password");
+        public static final String TENANT   = getValueFromEnvOrDefault("BACKEND_TENANT", "default");
+    }
+    public static class ExternalServices {
+        public static final String HOST = getValueFromEnvOrDefault("FINERACT_TEST_EXTERNAL_HOST", "localhost");
+    }
+}
+```
+
+Set these environment variables to point tests at any Fineract instance.
+
+---
+
+## RestAssured Setup
+
+`Utils.java` (`integration-tests/src/test/java/org/apache/fineract/integrationtests/common/Utils.java`) is the central RestAssured configuration utility:
+
+```java
+// Key constants
+public static final String TENANT_PARAM_NAME = "tenantIdentifier";
+public static final String DEFAULT_TENANT    = ConfigProperties.Backend.TENANT;
+public static final String TENANT_IDENTIFIER = TENANT_PARAM_NAME + '=' + DEFAULT_TENANT;
+private static final String LOGIN_URL        = "/fineract-provider/api/v1/authentication?" + TENANT_IDENTIFIER;
+private static final String HEALTH_URL       = "/fineract-provider/actuator/health";
+public static final String DATE_FORMAT       = "dd MMMM yyyy";
+public static final String LOCALE            = "en";
+```
+
+Tests call `Utils.initializeRESTAssured()` (or the equivalent setup in `@BeforeAll`) which:
+1. Sets `RestAssured.baseURI`, `port`, and `basePath`
+2. Disables SSL certificate validation (`trustAllSSLCertificates()`)
+3. Authenticates via `POST /fineract-provider/api/v1/authentication` to obtain a session token
+4. Creates a `RequestSpecification` with `Authorization: Basic` header and `tenantIdentifier` query param
+
+---
+
+## Base Classes
+
+### `BaseLoanIntegrationTest`
+
+**File:** `integration-tests/src/test/java/org/apache/fineract/integrationtests/BaseLoanIntegrationTest.java`
+
+The most important base class. Provides:
+- Pre-configured `RequestSpecification` and `ResponseSpecification`
+- Helper factory methods for creating loan products with advanced payment allocation
+- Inner `TransactionProcessingStrategyCode` enum: `ADVANCED_PAYMENT_ALLOCATION_STRATEGY`, `MIFOS_STANDARD`, `HEAVENSFAMILY`, `CREOCORE`, `INTEREST_PRINCIPAL_PENALTIES_FEES`, etc.
+- `CallFailedRuntimeException` handling patterns
+- Date formatting: `DATETIME_PATTERN = "dd MMMM yyyy"`
+- `FineractClient` Retrofit2 client injection via `FineractClientHelper`
+
+### `IntegrationTest` (Feign-based)
+
+**File:** `integration-tests/src/test/java/org/apache/fineract/integrationtests/client/IntegrationTest.java`
+
+Abstract base for newer tests using the `FineractFeignClient`:
+- `@TestInstance(Lifecycle.PER_CLASS)` — state preserved between `@Test` methods within a class
+- `@TestMethodOrder(MethodOrderer.OrderAnnotation.class)` — ordered test execution
+- Uses `org.assertj.core.api.Assertions` for fluent assertions
+- `BusinessDateHelper` and `GlobalConfigurationHelper` available for setup/teardown
+
+---
+
+## Test Helper Inventory (`common/` package)
+
+All helpers live in `integration-tests/src/test/java/org/apache/fineract/integrationtests/common/`:
+
+| Helper Class | What it wraps |
+|---|---|
+| `Utils.java` | RestAssured setup, auth, tenant management, random data generation |
+| `ClientHelper.java` | Create/retrieve/update clients |
+| `LoanApplicationTestBuilder.java` | Loan product and application request builder |
+| `OfficeHelper.java` | Office CRUD |
+| `GlobalConfigurationHelper.java` | Global config properties toggle (e.g. `enable-business-date`) |
+| `BusinessDateHelper.java` | Business date management (`POST /fineract-provider/api/v1/businessdate`) |
+| `BusinessStepHelper.java` | COB business step order configuration |
+| `BatchHelper.java` | Batch API request builder |
+| `AuditHelper.java` | Audit trail query |
+| `FineractClientHelper.java` | `FineractClient` (Retrofit2) factory |
+| `FineractFeignClientHelper.java` | `FineractFeignClient` (Feign) factory |
+| `ExternalAssetOwnerHelper.java` | Investor/asset externalization API |
+| `ExternalEventConfigurationHelper.java` | External event toggle API |
+| `CreditBureauIntegrationHelper.java` | Credit bureau API |
+| `CollateralManagementHelper.java` | Collateral product management |
+| `CalendarHelper.java` | Meeting calendar operations |
+| `CenterHelper.java` | Group center management |
+| `BusinessStepConfigurationHelper.java` | COB step ordering |
+| `CommonConstants.java` | Shared response field names |
+
+Subdirectory helpers cover more specialized areas:
+
+| Package | Notable Files |
+|---|---|
+| `common/loans/` | `LoanTransactionHelper.java`, `LoanProductHelper.java`, `LoanApplicationTestBuilder.java` |
+| `common/savings/` | `SavingsAccountHelper.java`, `SavingsProductHelper.java` |
+| `common/accounting/` | `AccountHelper.java`, `FinancialActivityAccountHelper.java` |
+| `common/organisation/` | `StaffHelper.java`, `HolidayHelper.java`, `WorkingDaysHelper.java` |
+| `cob/` | `LoanCOBTestSupport.java`, `CobBusinessStepHelper.java` |
+| `support/` | `ResponseSpecBuilder` extensions |
+
+---
+
+## Major Test Classes
+
+### Loan Tests
+
+| Test Class | What It Covers |
+|---|---|
+| `ClientLoanIntegrationTest.java` | Full loan lifecycle with various repayment strategies |
+| `BaseLoanIntegrationTest.java` | Base class; also contains ~100 direct test methods for advanced payment allocation |
+| `AdvancedPaymentAllocationLoanRepaymentScheduleTest.java` | Advanced payment allocation repayment schedule validation |
+| `LoanCOBCreateAccrualsTest.java` | Accrual creation during COB run |
+| `LoanInterestRecalculationCOBTest.java` | Interest recalculation in COB |
+| `LoanCOBAccountLockCatchupInlineCOBTest.java` | Account locking and inline COB recovery |
+| `LoanRescheduleRequestTest.java` | Loan reschedule scenarios |
+| `LoanChargesTest` (various) | Charge creation, waiver, reversal |
+| `LoanTransactionChargebackTest.java` | Chargeback transactions |
+| `LoanTransactionReverseReplayTest.java` | Transaction reverse-replay with journal entry validation |
+| `LoanDownPaymentTransactionTypeTest.java` | Down payment disbursement and accounting |
+| `ProgressiveLoanTrancheTest.java` | Multi-tranche progressive loan |
+| `DelinquencyBucketsIntegrationTest.java` | Delinquency bucket assignment via COB |
+| `LoanAccountChargeOffWithAdvancedPaymentAllocationTest.java` | Charge-off behavior |
+| `LoanInterestPauseApiTest.java` | Interest pause periods |
+
+### Savings Tests
+
+| Test Class | What It Covers |
+|---|---|
+| `ClientSavingsIntegrationTest.java` | Savings account lifecycle |
+| `SavingsAccountTransactionTest.java` | Deposits, withdrawals, holds |
+| `SavingsInterestPostingTest.java` | Interest calculation and posting |
+| `FixedDepositTest.java` | Fixed deposit product lifecycle |
+| `RecurringDepositTest.java` | Recurring deposit scenarios |
+| `SavingsAccountBalanceCheckAfterReversalTest.java` | Balance after transaction reversal |
+
+### Accounting Tests
+
+| Test Class | What It Covers |
+|---|---|
+| `AccountingScenarioIntegrationTest.java` | Multi-scenario GL accounting validation |
+| `FinancialActivityAccountsTest.java` | Financial activity account mapping |
+| `JournalEntryReversalOrderingIntegrationTest.java` | Journal entry reversal ordering |
+
+### Infrastructure Tests
+
+| Test Class | What It Covers |
+|---|---|
+| `SchedulerJobsTest.java` | Trigger all scheduler jobs, assert completion |
+| `ActuatorIntegrationTest.java` | Health, info, prometheus endpoints |
+| `ApiDocsTest.java` | Swagger UI and OpenAPI spec accessibility |
+| `AuthenticationIntegrationTest.java` | Login, wrong password, tenant validation |
+| `IdempotencyTest.java` | `Idempotency-Key` header behavior |
+| `InstanceModeIntegrationTest.java` | Read/write mode enforcement |
+| `BatchApiTest.java` | Batch request execution |
+| `ConcurrencyIntegrationTest.java` | Concurrent loan operations |
+| `ExternalBusinessEventTest.java` | External event emission and receipt |
+| `SqlInjectionReportingServiceIntegrationTest.java` | SQL injection pattern detection |
+| `SwaggeruiTest.java` | Swagger UI loads without errors |
+
+---
+
+## COB-Specific Tests
+
+COB tests live in `cob/` and `inlinecob/` sub-packages:
+
+| Test | Description |
+|---|---|
+| `LoanAccountArrearsAgeingCOBBusinessStepTest.java` | Arrears aging step updates loan delinquency |
+| `LoanCOBCatchUpInstanceModeIntegrationTest.java` | COB catchup across instance mode changes |
+| `LoanCOBPerformanceRestTest.java` | Performance baseline for COB execution |
+| Inline COB tests in `inlinecob/` | Test synchronous inline COB triggered by API calls |
+
+---
+
+## Running the Integration Tests
+
+<Steps>
+  <Step title="Start a Fineract Server">
+    The simplest approach uses Docker Compose:
+    ```bash
+    docker compose -f docker-compose-postgresql-test.yml up -d
+    # Wait for health: https://localhost:8443/fineract-provider/actuator/health
+    ```
+  </Step>
+  <Step title="Run All Integration Tests">
+    ```bash
+    ./gradlew :integration-tests:test \
+      -DBACKEND_PROTOCOL=https \
+      -DBACKEND_HOST=localhost \
+      -DBACKEND_PORT=8443
+    ```
+  </Step>
+  <Step title="Run a Specific Test Class">
+    ```bash
+    ./gradlew :integration-tests:test \
+      --tests "org.apache.fineract.integrationtests.ClientLoanIntegrationTest"
+    ```
+  </Step>
+  <Step title="Exclude Slow Tests">
+    ```bash
+    ./gradlew :integration-tests:test \
+      -PexcludeTests="*PerformanceTest*"
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  The `CIOnly` annotation/interface in `integration-tests/src/test/java/org/apache/fineract/integrationtests/CIOnly.java` marks tests that should only run in CI environments. Use `@Tag("CIOnly")` to gate these tests.
+</Note>
+
+---
+
+## Cargo Plugin (Embedded Tomcat)
+
+`integration-tests/build.gradle` applies `com.bmuschko.cargo` which can start an embedded Tomcat 10.x container for tests without a separate Docker setup:
+
+```groovy
+cargo {
+    containerId "tomcat10x"
+    deployable {
+        file = file("$rootDir/fineract-war/build/libs/fineract-provider.war")
+        context = 'fineract-provider'
+    }
+    local {
+        installer {
+            installConfiguration = configurations.tomcat
+        }
+    }
+}
+```
+
+Tasks: `cargoStartLocal` (start Tomcat), `cargoRunLocal` (run and block), `cargoStopLocal`.
+
+---
+
+## `oauth2-tests` Sub-Module
+
+**Gradle path:** `:oauth2-tests`
+
+Tests the OAuth2 / JWT bearer authentication flow:
+- Validates that protected endpoints return `401` without a valid token
+- Tests token exchange flow with the embedded Spring Authorization Server
+- Verifies scope-based access control (`read`, `write`)
+
+Run with the OAuth2 compose file:
+```bash
+docker compose -f docker-compose-oauth2-test.yml up -d
+./gradlew :oauth2-tests:test
+```
+
+---
+
+## `twofactor-tests` Sub-Module
+
+**Gradle path:** `:twofactor-tests`
+
+Tests two-factor authentication (`fineract.security.2fa.enabled=true`):
+- OTP delivery verification (SMS/email mock)
+- Protected endpoint access with and without 2FA token
+- The `userTFAccessToken` cache (`TTL=2h`, `max-entries=10000`) behavior
+
+Run with the 2FA compose file:
+```bash
+docker compose -f docker-compose-twofactor-test.yml up -d
+./gradlew :twofactor-tests:test
+```
+
+---
+
+## Feign-Based Test Infrastructure (`client/feign/` sub-package)
+
+Newer tests in `client/feign/tests/` use the `FineractFeignClient` (from `fineract-client-feign`) for type-safe API calls. The base classes `FeignLoanTestBase` and `FeignSavingsTestBase` provide pre-configured clients and standard setup/teardown:
+
+| Helper | Purpose |
+|---|---|
+| `FeignLoanHelper.java` | Type-safe loan lifecycle operations |
+| `FeignSavingsHelper.java` | Type-safe savings operations |
+| `FeignBusinessDateHelper.java` | Business date management |
+| `FeignGlobalConfigurationHelper.java` | Global config toggle |
+| `FeignExternalEventHelper.java` | External event polling and verification |
+| `FeignJournalEntryHelper.java` | Journal entry assertions |
+| `FeignSchedulerHelper.java` | Job trigger and await |
+
+Key Feign test classes:
+
+| Test | Description |
+|---|---|
+| `FeignLoanCreationTest.java` | Loan creation via Feign client |
+| `FeignClientLifecycleTest.java` | Client entity lifecycle |
+| `FeignSavingsLifecycleTest.java` | Savings account lifecycle |
+| `FeignLoanAccrualOnClosedLoanTest.java` | Accrual entries on closed loans |
+| `FeignProvisioningEntryTest.java` | Loan provisioning entries |
+| `FeignTrialBalanceSummaryReportTest.java` | Trial balance report via API |
+| `FeignWorkingCapitalLoanDiscountFeeAmortizationTest.java` | Working capital loan discount fee amortization |

@@ -1,0 +1,374 @@
+---
+title: "Loan Origination: Originator Registry & Enrichment"
+sidebarTitle: "Loan Origination"
+description: "Deep dive into the fineract-loan-origination module: LoanOriginator entity, API resources, CRUD handlers, loan-originator mapping, Avro enrichers, and conditional activation via fineract.module.loan-origination.enabled."
+---
+
+The `fineract-loan-origination` module provides a registry for **loan originators** — the third-party entities (brokers, aggregators, direct channels) that submitted a loan application to the financial institution. It is a purpose-built, conditionally-activated module that enriches loan-related Avro events with originator metadata, enabling downstream revenue-sharing, analytics, and regulatory reporting without polluting the core loan domain.
+
+## Scope and Purpose
+
+An **originator** in Fineract represents any external party responsible for sourcing a loan. The module manages:
+- A registry of originator records (`m_loan_originator`) with type and channel classifications.
+- A mapping table (`m_loan_originator_mapping`) that links an originator to a specific loan at submission time.
+- Enrichment of Avro event payloads (`LoanAccountDataV1`, `LoanTransactionDataV1`, `LoanRepaymentDueDataV1`, etc.) with originator details for event-driven consumers.
+
+The entire module is **conditionally active** — it only registers beans and exposes endpoints when `fineract.module.loan-origination.enabled=true` is set in application properties.
+
+## File Inventory
+
+| File | Role |
+|---|---|
+| `fineract-loan-origination/.../api/LoanOriginatorApiResource.java` | REST CRUD for originator registry at `GET/POST/PUT/DELETE /v1/loan-originators` |
+| `fineract-loan-origination/.../api/LoanOriginatorsApiResource.java` | REST for loan-originator mapping at `/v1/loans/{loanId}/originators` |
+| `fineract-loan-origination/.../api/LoanOriginatorApiConstants.java` | String constants: `RESOURCE_NAME`, field names, code names, param sets |
+| `fineract-loan-origination/.../api/LoanOriginatorApiResourceSwagger.java` | Swagger schema definitions (request/response classes) |
+| `fineract-loan-origination/.../domain/LoanOriginator.java` | JPA entity: `m_loan_originator` |
+| `fineract-loan-origination/.../domain/LoanOriginatorMapping.java` | JPA entity: `m_loan_originator_mapping` |
+| `fineract-loan-origination/.../domain/LoanOriginatorStatus.java` | Enum: `ACTIVE`, `PENDING`, `INACTIVE` |
+| `fineract-loan-origination/.../domain/LoanOriginatorRepository.java` | Spring Data repo with custom finders |
+| `fineract-loan-origination/.../domain/LoanOriginatorMappingRepository.java` | Spring Data repo: by loan ID, by originator ID |
+| `fineract-loan-origination/.../service/LoanOriginatorWritePlatformService.java` | Write service interface: `create`, `update`, `delete`, `attachOriginatorToLoan`, `detachOriginatorFromLoan` |
+| `fineract-loan-origination/.../service/LoanOriginatorWritePlatformServiceImpl.java` | Implementation; validates uniqueness, status, and loan state |
+| `fineract-loan-origination/.../service/LoanOriginatorReadPlatformService.java` | Read service interface |
+| `fineract-loan-origination/.../service/LoanOriginatorReadPlatformServiceImpl.java` | Loads from repo, maps via `LoanOriginatorMapper` |
+| `fineract-loan-origination/.../service/LoanOriginatorHelper.java` | Utility helpers for originator service logic |
+| `fineract-loan-origination/.../service/LoanOriginatorLinkingServiceImpl.java` | Service for bulk originator linking |
+| `fineract-loan-origination/.../handler/CreateLoanOriginatorCommandHandler.java` | `@CommandType(entity="LOAN_ORIGINATOR", action="CREATE")` |
+| `fineract-loan-origination/.../handler/UpdateLoanOriginatorCommandHandler.java` | `@CommandType(entity="LOAN_ORIGINATOR", action="UPDATE")` |
+| `fineract-loan-origination/.../handler/DeleteLoanOriginatorCommandHandler.java` | `@CommandType(entity="LOAN_ORIGINATOR", action="DELETE")` |
+| `fineract-loan-origination/.../handler/AttachLoanOriginatorCommandHandler.java` | `@CommandType(entity="LOAN_ORIGINATOR", action="ATTACH")` |
+| `fineract-loan-origination/.../handler/DetachLoanOriginatorCommandHandler.java` | `@CommandType(entity="LOAN_ORIGINATOR", action="DETACH")` |
+| `fineract-loan-origination/.../enricher/LoanAccountDataV1OriginatorEnricher.java` | `DataEnricher<LoanAccountDataV1>`: appends originator list to loan Avro events |
+| `fineract-loan-origination/.../enricher/LoanTransactionDataV1OriginatorEnricher.java` | `DataEnricher<LoanTransactionDataV1>` |
+| `fineract-loan-origination/.../enricher/LoanRepaymentDueDataV1OriginatorEnricher.java` | `DataEnricher<LoanRepaymentDueDataV1>` |
+| `fineract-loan-origination/.../enricher/LoanChargeDataV1OriginatorEnricher.java` | `DataEnricher<LoanChargeDataV1>` |
+| `fineract-loan-origination/.../enricher/LoanAccountDelinquencyRangeDataV1OriginatorEnricher.java` | `DataEnricher<LoanAccountDelinquencyRangeDataV1>` |
+| `fineract-loan-origination/.../enricher/LoanTransactionAdjustmentDataV1OriginatorEnricher.java` | `DataEnricher<LoanTransactionAdjustmentDataV1>` |
+| `fineract-loan-origination/.../enricher/LoanOriginatorAvroMapper.java` | Converts `LoanOriginator` → `OriginatorDetailsV1` Avro |
+| `fineract-loan-origination/.../helper/LoanOriginatorDetailsResolver.java` | Fetches mapping list and invokes `LoanOriginatorAvroMapper` |
+| `fineract-loan-origination/.../serialization/LoanOriginatorDataValidator.java` | JSON field validation for create/update requests |
+| `fineract-loan-origination/.../serialization/LoanApplicationOriginatorDataValidator.java` | Validates originator data in loan application context |
+| `fineract-loan-origination/.../mapper/LoanOriginatorMapper.java` | MapStruct/manual mapper: `LoanOriginator` → `LoanOriginatorData` |
+| `fineract-loan-origination/.../data/LoanApplicationOriginatorData.java` | DTO: `id`, `externalId`, `name`, `typeId`, `channelTypeId` |
+| `fineract-loan-origination/.../data/LoanOriginatorTemplateData.java` | Template response with code value options |
+| `fineract-loan-origination/.../data/LoanOriginatorMappingResponse.java` | Response for attach/detach: loan + originator IDs |
+| `fineract-loan-origination/.../data/LoanOriginatorsResponse.java` | Wrapped list: `LoanOriginatorsResponse.of(list)` |
+| `fineract-loan-origination/.../config/LoanOriginationModuleIsEnabledCondition.java` | `PropertiesCondition` reading `FineractProperties.module.loanOrigination.enabled` |
+| `fineract-loan-origination/.../exception/LoanOriginatorNotFoundException.java` | 404 on missing originator |
+| `fineract-loan-origination/.../exception/LoanOriginatorCannotBeDeletedException.java` | 403 when originator is mapped to loans |
+| `fineract-loan-origination/.../exception/LoanNotInSubmittedStatusException.java` | Thrown when attach/detach is attempted on a loan not in SUBMITTED status |
+| `fineract-loan-origination/.../exception/LoanOriginatorMappingAlreadyExistsException.java` | Duplicate mapping guard |
+| `fineract-loan-origination/.../exception/LoanOriginatorNotActiveException.java` | Thrown when attaching an INACTIVE/PENDING originator |
+
+## Domain Entities
+
+### `LoanOriginator`
+```
+fineract-loan-origination/.../domain/LoanOriginator.java
+Table: m_loan_originator
+```
+
+```java
+@Entity @Table(name = "m_loan_originator")
+public class LoanOriginator extends AbstractAuditableWithUTCDateTimeCustom<Long> {
+
+    @Column(name = "external_id", nullable = false, length = 100, unique = true)
+    private ExternalId externalId;          // unique business identifier
+
+    @Column(name = "name", length = 255)
+    private String name;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false, length = 20)
+    private LoanOriginatorStatus status;    // ACTIVE | PENDING | INACTIVE
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "originator_type_cv_id")
+    private CodeValue originatorType;       // from code "LoanOriginatorType"
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "channel_type_cv_id")
+    private CodeValue channelType;          // from code "LoanOriginationChannelType"
+}
+```
+
+Factory method: `LoanOriginator.create(ExternalId, String, LoanOriginatorStatus, CodeValue, CodeValue)`.
+
+Mutation: `originator.update(name, status, originatorType, channelType)` — called by the write service on update.
+
+---
+
+### `LoanOriginatorMapping`
+```
+fineract-loan-origination/.../domain/LoanOriginatorMapping.java
+Table: m_loan_originator_mapping
+```
+
+```java
+@Entity @Table(name = "m_loan_originator_mapping")
+public class LoanOriginatorMapping extends AbstractAuditableWithUTCDateTimeCustom<Long> {
+
+    @Column(name = "loan_id", nullable = false)
+    private Long loanId;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "originator_id", nullable = false)
+    private LoanOriginator originator;
+}
+```
+
+A loan can have **multiple originator mappings** (e.g., broker + aggregator). The mapping uses `loanId` (not a FK `Loan` object) to avoid loading the full `Loan` aggregate.
+
+---
+
+### `LoanOriginatorStatus`
+```
+fineract-loan-origination/.../domain/LoanOriginatorStatus.java
+```
+`ACTIVE` — can be attached to loans.  
+`PENDING` — created but not yet approved; cannot be attached.  
+`INACTIVE` — deactivated; cannot be attached to new loans.
+
+`LoanOriginatorStatus.fromString(String)` is case-insensitive.
+
+---
+
+### `LoanApplicationOriginatorData`
+```
+fineract-loan-origination/.../data/LoanApplicationOriginatorData.java
+```
+```java
+public class LoanApplicationOriginatorData {
+    private Long id;
+    private String externalId;
+    private String name;
+    private Long typeId;
+    private Long channelTypeId;
+}
+```
+Returned when querying originator details in a loan application context.
+
+## API Resources
+
+### `LoanOriginatorApiResource` — `/v1/loan-originators`
+```
+fineract-loan-origination/.../api/LoanOriginatorApiResource.java
+Activated by: @ConditionalOnProperty(value = "fineract.module.loan-origination.enabled", havingValue = "true")
+```
+
+<Tabs>
+  <Tab title="Create">
+    `POST /v1/loan-originators`
+
+    Required params: `externalId`, `name`. Optional: `status` (defaults to `ACTIVE`), `originatorTypeId`, `channelTypeId`.
+
+    Throws `LoanOriginatorDuplicateExternalIdException` if `externalId` already exists.
+
+    Permission: `CREATE_LOAN_ORIGINATOR`
+  </Tab>
+  <Tab title="Read">
+    `GET /v1/loan-originators` — list all  
+    `GET /v1/loan-originators/{originatorId}` — by internal ID  
+    `GET /v1/loan-originators/external-id/{externalId}` — by external ID  
+    `GET /v1/loan-originators/template` — returns `LoanOriginatorTemplateData` with code value options for `LoanOriginatorType` and `LoanOriginationChannelType`
+
+    Permission: `READ_LOAN_ORIGINATOR`
+  </Tab>
+  <Tab title="Update">
+    `PUT /v1/loan-originators/{originatorId}`  
+    `PUT /v1/loan-originators/external-id/{externalId}`
+
+    Updatable fields: `name`, `status`, `originatorTypeId`, `channelTypeId`. Returns `changes` map.
+
+    Permission: `UPDATE_LOAN_ORIGINATOR`
+  </Tab>
+  <Tab title="Delete">
+    `DELETE /v1/loan-originators/{originatorId}`  
+    `DELETE /v1/loan-originators/external-id/{externalId}`
+
+    Throws `LoanOriginatorCannotBeDeletedException` if the originator is linked to any loan (has rows in `m_loan_originator_mapping`).
+
+    Permission: `DELETE_LOAN_ORIGINATOR`
+  </Tab>
+</Tabs>
+
+---
+
+### `LoanOriginatorsApiResource` — `/v1/loans`
+```
+fineract-loan-origination/.../api/LoanOriginatorsApiResource.java
+```
+
+| Method & Path | Action |
+|---|---|
+| `GET /v1/loans/{loanId}/originators` | List all originators for a loan (by internal loan ID) |
+| `GET /v1/loans/external-id/{loanExternalId}/originators` | List by loan external ID |
+| `POST /v1/loans/{loanId}/originators/{originatorId}` | Attach originator to loan |
+| `POST /v1/loans/{loanId}/originators/external-id/{originatorExternalId}` | Attach by originator external ID |
+| `POST /v1/loans/external-id/{loanExternalId}/originators/{originatorId}` | Attach by loan external ID |
+| `POST /v1/loans/external-id/{loanExternalId}/originators/external-id/{originatorExternalId}` | Attach by both external IDs |
+| `DELETE /v1/loans/{loanId}/originators/{originatorId}` | Detach originator from loan |
+| (+ 3 more DELETE variants with external IDs) | — |
+
+**Attach/Detach constraints** (enforced in `LoanOriginatorWritePlatformServiceImpl`):
+- The loan **must** be in `SUBMITTED_AND_PENDING_APPROVAL` status — throws `LoanNotInSubmittedStatusException` otherwise.
+- The originator must be `ACTIVE` — throws `LoanOriginatorNotActiveException`.
+- The mapping must not already exist — throws `LoanOriginatorMappingAlreadyExistsException`.
+
+## Write Service: `LoanOriginatorWritePlatformServiceImpl`
+```
+fineract-loan-origination/.../service/LoanOriginatorWritePlatformServiceImpl.java
+```
+
+Key method signatures:
+
+```java
+// Registry CRUD
+CommandProcessingResult create(JsonCommand command);
+CommandProcessingResult update(Long id, JsonCommand command);
+CommandProcessingResult delete(Long id);
+
+// Loan-Originator mapping
+CommandProcessingResult attachOriginatorToLoan(Long loanId, Long originatorId);
+CommandProcessingResult detachOriginatorFromLoan(Long loanId, Long originatorId);
+```
+
+`attachOriginatorToLoan` internally:
+1. Loads `Loan` via `LoanRepositoryWrapper.findOneWithNotFoundDetection(loanId)`.
+2. Checks `loan.isSubmittedAndPendingApproval()` — rejects if not.
+3. Loads `LoanOriginator` by ID — throws 404 if not found.
+4. Checks `originator.getStatus() == LoanOriginatorStatus.ACTIVE` — rejects if not.
+5. Checks `loanOriginatorMappingRepository.existsByLoanIdAndOriginatorId(loanId, originatorId)` — rejects duplicates.
+6. Creates `LoanOriginatorMapping.create(loanId, originator)` and `saveAndFlush`.
+7. Returns `CommandProcessingResult` with `resourceId=loanId`, `subResourceId=originatorId`.
+
+## Handler Classes
+```
+fineract-loan-origination/.../handler/
+```
+
+All handlers are `@Service @CommandType(entity="LOAN_ORIGINATOR", action=...)` and implement `NewCommandSourceHandler`.
+
+| Handler | Command type | Calls |
+|---|---|---|
+| `CreateLoanOriginatorCommandHandler` | `CREATE` | `writePlatformService.create(command)` |
+| `UpdateLoanOriginatorCommandHandler` | `UPDATE` | `writePlatformService.update(command.entityId(), command)` |
+| `DeleteLoanOriginatorCommandHandler` | `DELETE` | `writePlatformService.delete(command.entityId())` |
+| `AttachLoanOriginatorCommandHandler` | `ATTACH` | `writePlatformService.attachOriginatorToLoan(command.getLoanId(), command.subentityId())` |
+| `DetachLoanOriginatorCommandHandler` | `DETACH` | `writePlatformService.detachOriginatorFromLoan(command.getLoanId(), command.subentityId())` |
+
+All handlers are gated by `@ConditionalOnProperty(value = "fineract.module.loan-origination.enabled", havingValue = "true")`.
+
+## Enrichers (Avro Pipeline Integration)
+
+The enricher classes implement the `DataEnricher<T>` interface from `fineract-core`. Fineract's event publishing infrastructure calls all registered `DataEnricher` beans for a given Avro type before serializing and publishing the event.
+
+### `LoanOriginatorDetailsResolver`
+```
+fineract-loan-origination/.../helper/LoanOriginatorDetailsResolver.java
+```
+
+```java
+public List<OriginatorDetailsV1> resolveOriginatorDetails(Long loanId) {
+    List<LoanOriginatorMapping> mappings =
+        loanOriginatorMappingRepository.findByLoanIdWithOriginatorDetails(loanId);
+    // maps each LoanOriginator → OriginatorDetailsV1 via LoanOriginatorAvroMapper
+}
+```
+
+Called by every enricher. Returns empty list (not null) when no mappings exist.
+
+### `LoanOriginatorAvroMapper`
+```
+fineract-loan-origination/.../enricher/LoanOriginatorAvroMapper.java
+```
+
+Converts `LoanOriginator` → `OriginatorDetailsV1` (Avro schema):
+- `id`, `externalId` (nullable), `name`, `status`
+- `originatorType`, `channelType` → `CodeValueDataV1` (id, name, position, description, active, mandatory)
+
+### Enricher List
+
+| Enricher | Avro type enriched | Field set |
+|---|---|---|
+| `LoanAccountDataV1OriginatorEnricher` | `LoanAccountDataV1` | `originators` list |
+| `LoanTransactionDataV1OriginatorEnricher` | `LoanTransactionDataV1` | `originators` list |
+| `LoanRepaymentDueDataV1OriginatorEnricher` | `LoanRepaymentDueDataV1` | `originators` list |
+| `LoanChargeDataV1OriginatorEnricher` | `LoanChargeDataV1` | `originators` list |
+| `LoanAccountDelinquencyRangeDataV1OriginatorEnricher` | `LoanAccountDelinquencyRangeDataV1` | `originators` list |
+| `LoanTransactionAdjustmentDataV1OriginatorEnricher` | `LoanTransactionAdjustmentDataV1` | `originators` list |
+
+All enrichers guard against null data and null `id` fields before calling the resolver.
+
+## Origination Workflow
+
+```mermaid
+flowchart TD
+    A[External system creates Loan Originator\nPOST /v1/loan-originators] --> B[LoanOriginator saved in m_loan_originator\nstatus=ACTIVE]
+    B --> C[Client submits Loan Application\nPOST /v1/loans via LoanAccountApiResource]
+    C --> D[Loan created in m_loan with\nstatus=SUBMITTED_AND_PENDING_APPROVAL]
+    D --> E[Attach originator to loan\nPOST /v1/loans/{loanId}/originators/{originatorId}]
+    E --> F{Loan in SUBMITTED status?\nOriginator ACTIVE?\nNo duplicate mapping?}
+    F -- All pass --> G[LoanOriginatorMapping created\nm_loan_originator_mapping row]
+    F -- Any fail --> H[Exception thrown:\nLoanNotInSubmittedStatusException\nor LoanOriginatorNotActiveException\nor LoanOriginatorMappingAlreadyExistsException]
+    G --> I[Loan goes through approval lifecycle\nApprove → Disburse → Active]
+    I --> J[Business events published]
+    J --> K[DataEnricher pipeline runs]
+    K --> L[LoanOriginatorDetailsResolver\nfetches mappings for loan ID]
+    L --> M[OriginatorDetailsV1 appended to\nLoanAccountDataV1 Avro event]
+    M --> N[Event published to Kafka/other consumers]
+```
+
+## Configuration
+
+### Module Enable Property
+```yaml
+# application.properties or application.yml
+fineract:
+  module:
+    loan-origination:
+      enabled: true
+```
+
+`LoanOriginationModuleIsEnabledCondition` extends `PropertiesCondition` and reads `FineractProperties.getModule().getLoanOrigination().isEnabled()`. When `false`, **all** `@ConditionalOnProperty`-gated beans in the module are skipped: API resources, handlers, enrichers, services, and repositories are never registered.
+
+### Code Value Setup
+
+The module uses two code tables that must be configured in `m_code` / `m_code_value`:
+- **`LoanOriginatorType`** (`LoanOriginatorApiConstants.ORIGINATOR_TYPE_CODE_NAME`) — e.g., "Broker", "Aggregator", "Direct"
+- **`LoanOriginationChannelType`** (`LoanOriginatorApiConstants.CHANNEL_TYPE_CODE_NAME`) — e.g., "Online", "Branch", "API"
+
+These are standard Fineract code values; pre-populate via the `/v1/codes/{codeId}/codevalues` endpoint.
+
+## Gotchas & Invariants
+
+<Warning>
+  Attaching/detaching an originator is only allowed when the loan is in `SUBMITTED_AND_PENDING_APPROVAL` status. Once approved, the originator association is **immutable** through the API. To change originator after approval, a direct database operation or a custom service extension is required. This is by design for audit integrity.
+</Warning>
+
+<Note>
+  `LoanOriginatorMapping` stores `loanId` as a plain `Long` column (not a `@ManyToOne` to `Loan`). This avoids loading the full `Loan` aggregate when resolving originator details for Avro enrichment. The repository query `findByLoanIdWithOriginatorDetails` uses a JOIN FETCH to eagerly load the `LoanOriginator` in a single query.
+</Note>
+
+<Warning>
+  Deleting a `LoanOriginator` that has any `LoanOriginatorMapping` rows throws `LoanOriginatorCannotBeDeletedException`. The check is `loanOriginatorMappingRepository.existsByOriginatorId(id)`. To clean up: first detach from all loans (while they are in SUBMITTED status), then delete.
+</Warning>
+
+<Tip>
+  The `LoanOriginatorData` class (the read DTO) is distinct from `LoanApplicationOriginatorData`. The former is the full registry view (used by `GET /v1/loan-originators`); the latter is a lighter projection used in loan application contexts. Do not confuse the two when adding new read endpoints.
+</Tip>
+
+<Note>
+  All enrichers use `data.getId()` or `data.getLoanId()` (depending on the Avro schema) as the key to fetch originator mappings. The `LoanRepaymentDueDataV1OriginatorEnricher` casts `data.getLoanId()` to `Long` explicitly — ensure the Avro schema version in use stores `loanId` as a `Long`, not a `String`, or this cast will throw at runtime.
+</Note>
+
+## Connections
+
+| Integration point | Details |
+|---|---|
+| `fineract-loan` | `LoanRepositoryWrapper` used to load `Loan` and check status during attach/detach |
+| `fineract-core` | `DataEnricher<T>` interface, `ExternalId`, `CommandProcessingResult`, `JsonCommand`, `PropertiesCondition`, `FineractProperties` |
+| Avro schemas (`fineract-avro`) | `LoanAccountDataV1`, `LoanTransactionDataV1`, `OriginatorDetailsV1`, `CodeValueDataV1` — must be on classpath |
+| `fineract-provider` | Spring Boot auto-configuration activates or skips the module based on the property; the `DataEnricher` beans are discovered automatically |
+| `m_code` / `m_code_value` | Code values for originator type and channel type must be pre-seeded |

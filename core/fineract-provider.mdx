@@ -1,0 +1,298 @@
+---
+title: "Fineract Provider: Assembly & Boot Module Guide"
+sidebarTitle: "Fineract Provider"
+description: "How fineract-provider assembles the full application: boot configuration, Jersey/JAX-RS wiring, Batch API, AdhocQuery, event producers, and application.properties reference."
+---
+
+`fineract-provider` is the executable Spring Boot assembly module. It does not contain domain logic — it imports every domain and infrastructure module, wires them together, and exposes the HTTP API surface. The module contains the `FineractApp` main class, two exclusive `@Configuration` root classes (`FineractWebApplicationConfiguration` and `FineractLiquibaseOnlyApplicationConfiguration`), Jersey/JAX-RS registration, security configuration, provider-level event serializers, and implementations of platform-neutral interfaces declared in `fineract-core`.
+
+<Note>
+All JAX-RS resource classes (`@Path`) and JAX-RS providers (`@Provider`) throughout the entire codebase are discovered and registered at startup by `JerseyConfig.setup()` via Spring's `ApplicationContext.getBeansWithAnnotation`. You do **not** need to register a new resource class explicitly — annotate it with `@Component` and `@Path` and it will be picked up automatically.
+</Note>
+
+---
+
+## Boot configuration
+
+### `FineractWebApplicationConfiguration`
+**File:** `fineract-provider/src/main/java/org/apache/fineract/infrastructure/core/boot/FineractWebApplicationConfiguration.java`
+
+The primary root configuration activated by `FineractWebApplicationCondition` (checks that the process was **not** started in Liquibase-only mode). It:
+
+- Annotates with `@EnableAutoConfiguration(exclude = { DataSourceAutoConfiguration, HibernateJpaAutoConfiguration, DataSourceTransactionManagerAutoConfiguration, GsonAutoConfiguration, JdbcTemplateAutoConfiguration, LiquibaseAutoConfiguration })` — these are all replaced by manual beans in `fineract-core` and `fineract-provider`.
+- Enables `@EnableTransactionManagement`, `@EnableWebSecurity`.
+- Activates `@ComponentScan(basePackages = "org.apache.fineract.**")` which picks up every `@Component`, `@Service`, `@Repository`, `@RestController`, `@Path`-annotated class across all included JARs.
+- Activates `@IntegrationComponentScan` for Spring Integration gateways.
+- Declares `@EnableConfigurationProperties({ FineractProperties.class, LiquibaseProperties.class })`.
+
+### `FineractLiquibaseOnlyApplicationConfiguration`
+**File:** `fineract-provider/src/main/java/org/apache/fineract/infrastructure/core/boot/FineractLiquibaseOnlyApplicationConfiguration.java`
+
+Activated by `FineractLiquibaseOnlyApplicationCondition`. Used when the application starts solely to run database migrations (e.g. in a Kubernetes init-container). It imports only:
+- `HikariCpConfig` — the master datasource for `fineract_tenants`.
+- `JdbcConfig` — the `JdbcTemplate` bean.
+- `ComponentScan` restricted to `service/migration`, `service/database`, `service/tenant` packages.
+
+No security, no Jersey, no jobs are wired in this mode.
+
+---
+
+## Jersey / JAX-RS registration
+
+### `JerseyConfig`
+**File:** `fineract-provider/src/main/java/org/apache/fineract/infrastructure/core/jersey/JerseyConfig.java`
+
+```java
+@Configuration(proxyBeanMethods = false)
+@ApplicationPath("/api")
+public class JerseyConfig extends ResourceConfig {
+    JerseyConfig() {
+        register(MultiPartFeature.class);
+        register(new AbstractBinder() {
+            protected void configure() {
+                bind(PageableParamProvider.class).to(ValueParamProvider.class).in(Singleton.class);
+            }
+        });
+        register(ValidationFeature.class);
+        property(ServerProperties.WADL_FEATURE_DISABLE, true);
+    }
+
+    @PostConstruct
+    public void setup() {
+        appCtx.getBeansWithAnnotation(Path.class).values().forEach(this::register);
+        appCtx.getBeansWithAnnotation(Provider.class).values().forEach(this::register);
+    }
+}
+```
+
+Key points:
+- **Base path** is `/api` — all endpoint URLs are `/api/v1/…`.
+- `MultiPartFeature` enables multipart file upload for bulk-import endpoints.
+- `PageableParamProvider` lets Jersey inject `Pageable` directly into resource method parameters.
+- `ValidationFeature` activates Bean Validation on incoming request bodies.
+- WADL is disabled (no `/application.wadl` endpoint).
+- The `@PostConstruct setup()` performs reflection-based registration at startup: any bean annotated `@Path` or `@Provider` is registered without explicit listing.
+
+### JSON converters
+JAX-RS JSON serialization is handled by custom converters in `fineract-provider/src/main/java/org/apache/fineract/infrastructure/core/jersey/converter/`:
+- `LocalDateJsonConverter` — `LocalDate` ↔ ISO-8601 string
+- `LocalDateTimeJsonConverter` — `LocalDateTime` ↔ ISO-8601
+- `OffsetDateTimeJsonConverter`
+- `DateJsonConverter` — legacy `java.util.Date`
+- `ExternalIdJsonConverter` — `ExternalId` value type
+
+---
+
+## Security configuration
+
+### `SecurityConfig`
+**File:** `fineract-provider/src/main/java/org/apache/fineract/infrastructure/core/config/SecurityConfig.java`
+
+Wires the Spring Security filter chain. The active security scheme is controlled by `fineract.security.basicauth.enabled` / `fineract.security.oauth2.enabled`. Key filter in the chain:
+
+**`TenantAwareBasicAuthenticationFilter`** (`fineract-security` module):
+- Reads `Fineract-Platform-TenantId` header (or falls back to `tenantIdentifier` query param).
+- Calls `TenantDetailsService.loadTenantById` to resolve `FineractPlatformTenant`.
+- Stores tenant in `ThreadLocalContextUtil`.
+- Loads business dates from `BusinessDateReadPlatformService.getBusinessDates()` and stores in thread-local.
+
+---
+
+## Infrastructure sub-packages (provider-level)
+
+### AdhocQuery
+- `AdHocApiResource` at `GET/POST/PUT/DELETE /api/v1/adhocquery` — CRUD for ad-hoc named SQL queries.
+- `AdHoc` JPA entity stored in `m_adhoc_query`.
+- Queries are executed on a schedule via `RunAdhocReportAndSendMailScheduledJob`.
+
+### Batch API
+
+The Batch API (`POST /api/v1/batches`) allows multiple logical HTTP requests to be submitted as a single HTTP call. It is defined in **fineract-core** (`batch/api/BatchApiResource.java`) and fulfilled via `BatchApiService` with `CommandStrategy` implementations in **fineract-provider**.
+
+<CardGroup cols={2}>
+  <Card title="BatchApiResource" icon="layer-group">
+    `fineract-core/src/main/java/org/apache/fineract/batch/api/BatchApiResource.java`  
+    JAX-RS `@Path("/v1/batches") @POST`. Deserialises an array of `BatchRequest` objects, delegates to `BatchApiService`, returns array of `BatchResponse`.
+  </Card>
+  <Card title="CommandStrategy" icon="code">
+    `fineract-core/src/main/java/org/apache/fineract/batch/command/CommandStrategy.java`  
+    `BatchResponse execute(BatchRequest, UriInfo)`. There are **68** `CommandStrategy` implementations in `fineract-provider/src/main/java/org/apache/fineract/batch/command/internal/`.
+  </Card>
+</CardGroup>
+
+`CommandStrategyProvider` maintains a `ConcurrentHashMap<String, CommandStrategy>` keyed by `METHOD:URL_PATTERN`. It resolves the correct strategy on each batch sub-request.
+
+Selected `CommandStrategy` implementations:
+
+| Strategy class | HTTP pattern |
+|---|---|
+| `ActivateClientCommandStrategy` | `POST /clients/{id}?command=activate` |
+| `ApplyLoanCommandStrategy` | `POST /loans` |
+| `ApproveLoanCommandStrategy` | `POST /loans/{id}?command=approve` |
+| `DisburseLoanCommandStrategy` | `POST /loans/{id}?command=disburse` |
+| `RepayLoanCommandStrategy` | `POST /loans/{id}/transactions?command=repayment` |
+| `CreateClientCommandStrategy` | `POST /clients` |
+| `UpdateClientCommandStrategy` | `PUT /clients/{id}` |
+| `SavingsAccountTransactionCommandStrategy` | `POST /savingsaccounts/{id}/transactions` |
+| `CollectChargesCommandStrategy` | `GET /loans/{id}/charges` |
+| `ModifyLoanApplicationCommandStrategy` | `PUT /loans/{id}` |
+| `UnknownCommandStrategy` (core) | fallback — returns `501 Not Implemented` |
+
+JSON Path dependency resolution: if a batch sub-request body or URL contains `$.someField`, the Batch engine substitutes the value from the preceding request's response body using JsonPath expressions.
+
+### Commands / legacy CQRS wiring
+
+Provider-level command handlers live in `fineract-provider/src/main/java/org/apache/fineract/*/handler/`. Each handler implements the legacy `NewCommandSourceHandler` interface (in `fineract-core/commands/`) and is tied to a specific `CommandWrapper.actionName()` + entity type.
+
+`PortfolioCommandSourceWritePlatformServiceImpl` (`fineract-core/src/main/java/org/apache/fineract/commands/service/`) is the legacy entry-point. It calls `CommandProcessingService.processAndLogCommand` which in turn resolves the correct `NewCommandSourceHandler` via Spring context, executes it, and persists the result in `m_portfolio_command_source`.
+
+---
+
+## Event producers (provider-level)
+
+### Kafka producer
+**File:** `fineract-provider/src/main/java/org/apache/fineract/infrastructure/event/external/config/ExternalEventKafkaConfiguration.java`
+
+Active when `fineract.events.external.producer.kafka.enabled=true`. Registers:
+- `ProducerFactory<Long, byte[]>` — `DefaultKafkaProducerFactory` with `LongSerializer` (partition key = aggregate root id) and `ByteArraySerializer` (Avro payload).
+- `KafkaTemplate<Long, byte[]> externalEventsKafkaTemplate`.
+
+**`KafkaExternalEventProducer`** (`fineract-provider/…/producer/kafka/KafkaExternalEventProducer.java`) implements `ExternalEventProducer`:
+```java
+void sendEvents(Map<Long, List<byte[]>> partitions)
+```
+Sends each `byte[]` payload to topic `fineract.events.external.producer.kafka.topic.name` with the `Long` key as partition key. Waits for acknowledgement up to `fineract.events.external.producer.kafka.timeout-in-seconds`.
+
+### JMS producer (ActiveMQ)
+**File:** `fineract-provider/…/producer/jms/JMSMultiExternalEventProducer.java`
+
+Active when `fineract.events.external.producer.jms.enabled=true`. Supports both queue (`event-queue-name`) and topic (`event-topic-name`) destinations. `producer-count` controls concurrency.
+
+### Event serializers
+Domain-specific Avro serializers live at `fineract-provider/src/main/java/org/apache/fineract/infrastructure/event/external/service/serialization/serializer/`:
+- `loan/LoanBusinessEventSerializer`
+- `client/ClientBusinessEventSerializer`
+- (savings serializers follow the same pattern)
+
+Each serializer implements `BusinessEventSerializer`:
+```java
+Class<? extends ByteBufferSerializable> getSupportedSchema();
+ByteBufferSerializable toAvroDTO(BusinessEvent<T> event);
+boolean canSerialize(BusinessEvent<?> event);
+```
+
+`BusinessEventSerializerFactory` iterates all registered serializers, calls `canSerialize`, and returns the first match.
+
+---
+
+## `application.properties` key sections
+
+The canonical file is `fineract-provider/src/main/resources/application.properties`.
+
+### Security
+
+| Property | Env var | Default | Notes |
+|---|---|---|---|
+| `fineract.security.basicauth.enabled` | `FINERACT_SECURITY_BASICAUTH_ENABLED` | `true` | Enable HTTP Basic auth |
+| `fineract.security.oauth2.enabled` | `FINERACT_SECURITY_OAUTH_ENABLED` | `false` | Enable OAuth2/OIDC |
+| `fineract.security.2fa.enabled` | `FINERACT_SECURITY_2FA_ENABLED` | `false` | Two-factor authentication |
+| `fineract.security.cors.enabled` | `FINERACT_SECURITY_CORS_ENABLED` | `true` | CORS filter |
+| `fineract.security.cors.allowed-origin-patterns` | `FINERACT_SECURITY_CORS_ALLOWED_ORIGIN_PATTERNS` | `*` | |
+| `fineract.security.oidc-federation.enabled` | `FINERACT_SECURITY_OIDC_FEDERATION_ENABLED` | `false` | Federated OIDC |
+| `fineract.security.oidc-federation.tenant-claim-name` | `FINERACT_SECURITY_OIDC_TENANT_CLAIM` | `fineract_tenant` | JWT claim for tenant id |
+| `fineract.security.oidc-federation.username-claim` | `FINERACT_SECURITY_OIDC_USERNAME_CLAIM` | `preferred_username` | |
+
+### Tenant DB defaults
+
+| Property | Env var | Default |
+|---|---|---|
+| `fineract.tenant.host` | `FINERACT_DEFAULT_TENANTDB_HOSTNAME` | `localhost` |
+| `fineract.tenant.port` | `FINERACT_DEFAULT_TENANTDB_PORT` | `5432` |
+| `fineract.tenant.username` | `FINERACT_DEFAULT_TENANTDB_UID` | `root` |
+| `fineract.tenant.password` | `FINERACT_DEFAULT_TENANTDB_PWD` | `postgres` |
+| `fineract.tenant.identifier` | `FINERACT_DEFAULT_TENANTDB_IDENTIFIER` | `default` |
+| `fineract.tenant.name` | `FINERACT_DEFAULT_TENANTDB_NAME` | `fineract_default` |
+| `fineract.tenant.master-password` | `FINERACT_DEFAULT_TENANTDB_MASTER_PASSWORD` | `fineract` |
+| `fineract.tenant.read-only-host` | `FINERACT_DEFAULT_TENANTDB_RO_HOSTNAME` | _(empty)_ |
+| `fineract.tenant.config.min-pool-size` | `FINERACT_CONFIG_MIN_POOL_SIZE` | `-1` (use DB value) |
+| `fineract.tenant.config.max-pool-size` | `FINERACT_CONFIG_MAX_POOL_SIZE` | `-1` (use DB value) |
+| `fineract.tenant.config.leak-detection-threshold` | `FINERACT_CONFIG_LEAK_DETECTION_THRESHOLD` | `0` |
+
+### External events
+
+| Property | Env var | Default |
+|---|---|---|
+| `fineract.events.external.enabled` | `FINERACT_EXTERNAL_EVENTS_ENABLED` | `false` |
+| `fineract.events.external.partition-size` | `FINERACT_EXTERNAL_EVENTS_PARTITION_SIZE` | `5000` |
+| `fineract.events.external.producer.kafka.enabled` | `FINERACT_EXTERNAL_EVENTS_KAFKA_ENABLED` | `false` |
+| `fineract.events.external.producer.kafka.topic.name` | `FINERACT_EXTERNAL_EVENTS_KAFKA_TOPIC_NAME` | `external-events` |
+| `fineract.events.external.producer.kafka.bootstrap-servers` | `FINERACT_EXTERNAL_EVENTS_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` |
+| `fineract.events.external.producer.kafka.timeout-in-seconds` | `FINERACT_EXTERNAL_EVENTS_KAFKA_TIMEOUT_IN_SECONDS` | `10` |
+| `fineract.events.external.producer.jms.enabled` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_ENABLED` | `false` |
+| `fineract.events.external.producer.jms.broker-url` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_BROKER_URL` | `tcp://127.0.0.1:61616` |
+| `fineract.events.external.producer.jms.event-queue-name` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_QUEUE_NAME` | _(empty)_ |
+| `fineract.events.external.thread-pool-core-pool-size` | `FINERACT_EVENT_TASK_EXECUTOR_CORE_POOL_SIZE` | `2` |
+| `fineract.events.external.thread-pool-max-pool-size` | `FINERACT_EVENT_TASK_EXECUTOR_MAX_POOL_SIZE` | `25` |
+
+### Remote job message handler
+
+| Property | Env var | Default |
+|---|---|---|
+| `fineract.remote-job-message-handler.spring-events.enabled` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_SPRING_EVENTS_ENABLED` | `true` |
+| `fineract.remote-job-message-handler.jms.enabled` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_JMS_ENABLED` | `false` |
+| `fineract.remote-job-message-handler.kafka.enabled` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_ENABLED` | `false` |
+| `fineract.remote-job-message-handler.kafka.topic.name` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_TOPIC_NAME` | `job-topic` |
+| `fineract.remote-job-message-handler.kafka.bootstrap-servers` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` |
+
+### Content / document storage
+
+| Property | Env var | Default |
+|---|---|---|
+| `fineract.content.filesystem.enabled` | `FINERACT_CONTENT_FILESYSTEM_ENABLED` | `true` |
+| `fineract.content.filesystem.rootFolder` | `FINERACT_CONTENT_FILESYSTEM_ROOT_FOLDER` | `~/.fineract` |
+| `fineract.content.s3.enabled` | `FINERACT_CONTENT_S3_ENABLED` | `false` |
+| `fineract.content.s3.bucketName` | `FINERACT_CONTENT_S3_BUCKET_NAME` | _(empty)_ |
+| `fineract.content.s3.accessKey` | `FINERACT_CONTENT_S3_ACCESS_KEY` | _(empty)_ |
+| `fineract.content.s3.secretKey` | `FINERACT_CONTENT_S3_SECRET_KEY` | _(empty)_ |
+| `fineract.content.s3.region` | `FINERACT_CONTENT_S3_REGION` | _(empty)_ |
+| `fineract.content.s3.endpoint` | `FINERACT_CONTENT_S3_ENDPOINT` | _(empty)_ |
+| `fineract.content.regex-whitelist-enabled` | `FINERACT_CONTENT_REGEX_WHITELIST_ENABLED` | `true` |
+| `fineract.content.mime-whitelist-enabled` | `FINERACT_CONTENT_MIME_WHITELIST_ENABLED` | `true` |
+
+### Instance mode
+
+| Property | Env var | Default |
+|---|---|---|
+| `fineract.mode.read-enabled` | `FINERACT_MODE_READ_ENABLED` | `true` |
+| `fineract.mode.write-enabled` | `FINERACT_MODE_WRITE_ENABLED` | `true` |
+| `fineract.mode.batch-worker-enabled` | `FINERACT_MODE_BATCH_WORKER_ENABLED` | `true` |
+| `fineract.mode.batch-manager-enabled` | `FINERACT_MODE_BATCH_MANAGER_ENABLED` | `true` |
+
+---
+
+## Key JPA and JDBC configurations
+
+- `HikariCpConfig` (`fineract-provider/…/config/HikariCpConfig.java`) — creates the `hikariTenantDataSource` bean (master `fineract_tenants` pool).
+- `JPAConfig` / `JpaTransactionConfig` (`fineract-provider/…/config/jpa/`) — configures the `EntityManagerFactory` with `LocalContainerEntityManagerFactoryBean`. The transaction manager bean name is `jpaTransactionManager`.
+- `JdbcTransactionConfig` — configures a separate `DataSourceTransactionManager` for JDBC-only code.
+- `CacheConfig` (`fineract-provider/…/config/cache/CacheConfig.java`) — wires `TransactionBoundCacheManager` (clears cache entries on transaction rollback) wrapping `RuntimeDelegatingCacheManager`.
+
+---
+
+## Gotchas & invariants
+
+<Warning>
+`FineractWebApplicationConfiguration` and `FineractLiquibaseOnlyApplicationConfiguration` are mutually exclusive via `@Conditional`. Never include both in the same Spring context. `FineractWebApplicationCondition` returns `false` when `fineract.liquibase-only-mode=true` is set.
+</Warning>
+
+<Accordion title="Jersey vs Spring MVC">
+Fineract uses Jersey (JAX-RS), not Spring MVC. There is no `@RestController` / `@RequestMapping` anywhere in the API surface. Actuator (`/actuator/**`) is the only path served by Spring MVC's `DispatcherServlet`. Do not mix `@Path` and `@RequestMapping` on the same class.
+</Accordion>
+
+<Accordion title="Component scan breadth">
+`@ComponentScan(basePackages = "org.apache.fineract.**")` is intentionally broad. It picks up beans from every JAR on the classpath that declares classes in the `org.apache.fineract` hierarchy. Adding a new module to the classpath is sufficient to activate its beans.
+</Accordion>
+
+<Accordion title="ContentS3Config auto-wires AWS SDK">
+`ContentS3Config` (`fineract-provider/…/config/ContentS3Config.java`) wires the AWS S3 client only when `fineract.content.s3.enabled=true`. If you set this to `true` without valid AWS credentials, the application fails to start.
+</Accordion>

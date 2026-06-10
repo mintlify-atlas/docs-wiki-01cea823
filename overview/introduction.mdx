@@ -1,0 +1,319 @@
+---
+title: "Apache Fineract: Open-Source Core Banking Platform"
+sidebarTitle: "Introduction"
+description: "A deep technical introduction to Apache Fineract — its Spring Boot architecture, multi-tenant design, CQRS command bus, Spring Batch COB, and all Gradle submodules."
+---
+
+Apache Fineract is an open-source, production-grade **core banking platform** built on Java 21 and Spring Boot 3.x. It provides the infrastructure that financial institutions, fintech startups, and microfinance organizations need to manage loans, savings, accounting, and the full client lifecycle — without starting from scratch. Maintained under the Apache Software Foundation, it is a verified Digital Public Good and powers real deployments on every inhabited continent.
+
+<CardGroup cols={2}>
+  <Card title="GitHub Repository" icon="github" href="https://github.com/apache/fineract">
+    `apache/fineract` — active development on the `develop` branch
+  </Card>
+  <Card title="Swagger UI (Sandbox)" icon="code" href="https://sandbox.mifos.community/fineract-provider/swagger-ui/index.html">
+    Live API explorer — full OpenAPI 3 spec
+  </Card>
+</CardGroup>
+
+---
+
+## What Apache Fineract Is
+
+Fineract exposes a **REST API only** — it ships no UI of its own. Clients (web apps, mobile apps, third-party systems) call its `https://<host>:8443/fineract-provider/api/v1/...` endpoints. Every write operation passes through a **CQRS command bus** (`CommandDispatcher` → `CommandHandler`) that records an immutable audit trail, supports maker-checker four-eyes approval, and provides Resilience4j-based retry logic. Close-of-Business (COB) processing uses Spring Batch partitioning to handle millions of loans nightly.
+
+The canonical entry-point class is `org.apache.fineract.ServerApplication` in `fineract-provider/src/main/java/org/apache/fineract/ServerApplication.java`. It extends `SpringBootServletInitializer` so the same binary can run as a **self-contained Spring Boot JAR** (recommended) or be deployed as a **WAR** to an external Tomcat ≥ 10.
+
+---
+
+## System Requirements
+
+| Requirement | Minimum | Recommended / Tested |
+|---|---|---|
+| **JVM** | Java 21 | Azul Zulu JDK 21 (CI-tested) |
+| **Database** | PostgreSQL 18.0 | PostgreSQL 18.3 (Docker: `postgres:18.3`) |
+| **RAM** | 16 GB | 16 GB+ for production |
+| **CPU** | 8 cores | 8+ cores |
+| **Tomcat** (WAR only) | v10 | Not needed for JAR deployment |
+
+<Warning>
+MySQL and MariaDB are **deprecated** as of FSIP-9. Their JDBC drivers are excluded from all distributed artifacts due to GPL/LGPL license incompatibilities. PostgreSQL is the only officially supported and tested database.
+</Warning>
+
+---
+
+## Deployment Models
+
+<Tabs>
+  <Tab title="Self-Contained JAR (Recommended)">
+    Build and run a Spring Boot fat-JAR with an embedded Tomcat:
+
+    ```bash
+    ./gradlew clean bootJar
+    # Output: fineract-provider/build/libs/fineract-provider-<version>.jar
+
+    java -jar fineract-provider/build/libs/fineract-provider.jar
+    ```
+
+    The server listens on `https://localhost:8443/fineract-provider/` by default. SSL is enabled by default using a self-signed `keystore.jks` bundled in `fineract-provider/src/main/resources/keystore.jks`.
+  </Tab>
+  <Tab title="WAR Deployment">
+    Build and deploy to an external Tomcat 10+:
+
+    ```bash
+    ./gradlew :fineract-war:clean :fineract-war:war
+    # Output: fineract-war/build/libs/fineract-war-<version>.war
+    ```
+
+    Copy the WAR to your Tomcat `webapps/` directory. The `fineract-war` module is a thin wrapper with no additional logic.
+  </Tab>
+  <Tab title="Docker / Docker Compose">
+    ```bash
+    # Build image with Jib (no Docker daemon needed)
+    ./gradlew :fineract-provider:jibDockerBuild -x test
+
+    # Start full stack (Fineract + PostgreSQL + Grafana/Loki)
+    docker compose -f docker-compose-development.yml up -d
+    ```
+
+    The official image is `apache/fineract` on Docker Hub. It ships only the PostgreSQL JDBC driver.
+  </Tab>
+  <Tab title="Quick Local Dev">
+    ```bash
+    # Prerequisite: PostgreSQL running on localhost:5432
+
+    ./gradlew createPGDB -PdbName=fineract_tenants
+    ./gradlew createPGDB -PdbName=fineract_default
+    ./gradlew devRun
+    # API available at https://localhost:8443/fineract-provider/
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Primary Entry Points
+
+### `ServerApplication.java`
+
+**File:** `fineract-provider/src/main/java/org/apache/fineract/ServerApplication.java`
+
+```java
+public class ServerApplication extends SpringBootServletInitializer {
+
+    @Import({ FineractWebApplicationConfiguration.class,
+              FineractLiquibaseOnlyApplicationConfiguration.class })
+    private static final class Configuration {}
+
+    public static void main(String[] args) throws IOException {
+        configureApplication(new SpringApplicationBuilder(ServerApplication.class)).run(args);
+    }
+}
+```
+
+`ServerApplication` performs two actions:
+1. **JAR path:** `main()` calls `configureApplication()`, which passes the inner `Configuration` class to `SpringApplicationBuilder`. Spring Boot then loads all auto-configurations filtered by `FineractWebApplicationConfiguration`.
+2. **WAR path:** `configure(SpringApplicationBuilder)` is called by the servlet container initializer; it routes to the same `configureApplication()` method.
+
+The inner `Configuration` class uses `@Import` to pull in:
+- `FineractWebApplicationConfiguration` — the primary Spring config (see below).
+- `FineractLiquibaseOnlyApplicationConfiguration` — a secondary configuration that runs Liquibase tenant database migrations independently.
+
+### `FineractWebApplicationConfiguration.java`
+
+**File:** `fineract-provider/src/main/java/org/apache/fineract/infrastructure/core/boot/FineractWebApplicationConfiguration.java`
+
+This is the **root Spring configuration** class. Key annotations:
+
+| Annotation | Effect |
+|---|---|
+| `@EnableAutoConfiguration(exclude = {...})` | Disables Spring Boot auto-configuration for DataSource, JPA, Liquibase, Gson, JdbcTemplate — Fineract wires these manually |
+| `@EnableTransactionManagement` | Activates `@Transactional` AOP proxy weaving |
+| `@EnableWebSecurity` | Activates Spring Security filter chain |
+| `@EnableConfigurationProperties({ FineractProperties.class, LiquibaseProperties.class })` | Binds `application.properties` to `FineractProperties` |
+| `@ComponentScan(basePackages = "org.apache.fineract.**")` | Discovers all beans across **all** fineract modules on the classpath |
+| `@IntegrationComponentScan(basePackages = "org.apache.fineract.**")` | Scans Spring Integration components |
+| `@Conditional(FineractWebApplicationCondition.class)` | Activates only in full web application mode (not standalone Liquibase runs) |
+
+### `application.properties`
+
+**File:** `fineract-provider/src/main/resources/application.properties`
+
+This file is the single source of truth for all runtime configuration. Every property has an environment-variable override in `${ENV_VAR:default}` syntax. Key sections:
+
+<Accordion title="Server & SSL">
+
+| Property | Env Var | Default |
+|---|---|---|
+| `server.port` | `FINERACT_SERVER_PORT` | `8443` |
+| `server.servlet.context-path` | `FINERACT_SERVER_SERVLET_CONTEXT_PATH` | `/fineract-provider` |
+| `server.ssl.enabled` | `FINERACT_SERVER_SSL_ENABLED` | `true` |
+| `server.ssl.key-store` | `FINERACT_SERVER_SSL_KEY_STORE` | `classpath:keystore.jks` |
+| `server.ssl.key-store-password` | `FINERACT_SERVER_SSL_KEY_STORE_PASSWORD` | `openmf` |
+| `server.tomcat.threads.max` | `FINERACT_SERVER_TOMCAT_THREADS_MAX` | `200` |
+
+</Accordion>
+
+<Accordion title="Tenants Database (HikariCP)">
+
+| Property | Env Var | Default |
+|---|---|---|
+| `spring.datasource.hikari.jdbcUrl` | `FINERACT_HIKARI_JDBC_URL` | `jdbc:postgresql://localhost:5432/fineract_tenants` |
+| `spring.datasource.hikari.username` | `FINERACT_HIKARI_USERNAME` | `root` |
+| `spring.datasource.hikari.password` | `FINERACT_HIKARI_PASSWORD` | `postgres` |
+| `spring.datasource.hikari.maximumPoolSize` | `FINERACT_HIKARI_MAXIMUM_POOL_SIZE` | `10` |
+| `spring.datasource.hikari.driverClassName` | `FINERACT_HIKARI_DRIVER_SOURCE_CLASS_NAME` | `org.postgresql.Driver` |
+
+</Accordion>
+
+<Accordion title="Default Tenant Connection">
+
+| Property | Env Var | Default |
+|---|---|---|
+| `fineract.tenant.host` | `FINERACT_DEFAULT_TENANTDB_HOSTNAME` | `localhost` |
+| `fineract.tenant.port` | `FINERACT_DEFAULT_TENANTDB_PORT` | `5432` |
+| `fineract.tenant.username` | `FINERACT_DEFAULT_TENANTDB_UID` | `root` |
+| `fineract.tenant.password` | `FINERACT_DEFAULT_TENANTDB_PWD` | `postgres` |
+| `fineract.tenant.identifier` | `FINERACT_DEFAULT_TENANTDB_IDENTIFIER` | `default` |
+| `fineract.tenant.name` | `FINERACT_DEFAULT_TENANTDB_NAME` | `fineract_default` |
+| `fineract.tenant.timezone` | `FINERACT_DEFAULT_TENANTDB_TIMEZONE` | `Asia/Kolkata` |
+
+</Accordion>
+
+<Accordion title="Security">
+
+| Property | Env Var | Default |
+|---|---|---|
+| `fineract.security.basicauth.enabled` | `FINERACT_SECURITY_BASICAUTH_ENABLED` | `true` |
+| `fineract.security.oauth2.enabled` | `FINERACT_SECURITY_OAUTH_ENABLED` | `false` |
+| `fineract.security.2fa.enabled` | `FINERACT_SECURITY_2FA_ENABLED` | `false` |
+| `fineract.security.cors.enabled` | `FINERACT_SECURITY_CORS_ENABLED` | `true` |
+| `fineract.security.oidc-federation.enabled` | `FINERACT_SECURITY_OIDC_FEDERATION_ENABLED` | `false` |
+
+</Accordion>
+
+<Accordion title="COB / Spring Batch">
+
+| Property | Env Var | Default |
+|---|---|---|
+| `fineract.job.loan-cob-enabled` | `FINERACT_JOB_LOAN_COB_ENABLED` | `true` |
+| `fineract.mode.batch-manager-enabled` | `FINERACT_MODE_BATCH_MANAGER_ENABLED` | `true` |
+| `fineract.mode.batch-worker-enabled` | `FINERACT_MODE_BATCH_WORKER_ENABLED` | `true` |
+| `fineract.partitioned-job.partitioned-job-properties[0].job-name` | — | `LOAN_COB` |
+| `fineract.partitioned-job.partitioned-job-properties[0].chunk-size` | `LOAN_COB_CHUNK_SIZE` | `100` |
+| `fineract.partitioned-job.partitioned-job-properties[0].partition-size` | `LOAN_COB_PARTITION_SIZE` | `100` |
+
+</Accordion>
+
+<Accordion title="External Events (Kafka / JMS)">
+
+| Property | Env Var | Default |
+|---|---|---|
+| `fineract.events.external.enabled` | `FINERACT_EXTERNAL_EVENTS_ENABLED` | `false` |
+| `fineract.events.external.producer.kafka.enabled` | `FINERACT_EXTERNAL_EVENTS_KAFKA_ENABLED` | `false` |
+| `fineract.events.external.producer.jms.enabled` | `FINERACT_EXTERNAL_EVENTS_PRODUCER_JMS_ENABLED` | `false` |
+| `fineract.remote-job-message-handler.spring-events.enabled` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_SPRING_EVENTS_ENABLED` | `true` |
+| `fineract.remote-job-message-handler.kafka.enabled` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_ENABLED` | `false` |
+| `fineract.remote-job-message-handler.jms.enabled` | `FINERACT_REMOTE_JOB_MESSAGE_HANDLER_JMS_ENABLED` | `false` |
+
+</Accordion>
+
+<Accordion title="Mode Flags (Read / Write / Batch)">
+
+| Property | Env Var | Default | Purpose |
+|---|---|---|---|
+| `fineract.mode.read-enabled` | `FINERACT_MODE_READ_ENABLED` | `true` | Allow read API requests |
+| `fineract.mode.write-enabled` | `FINERACT_MODE_WRITE_ENABLED` | `true` | Allow write API requests |
+| `fineract.mode.batch-worker-enabled` | `FINERACT_MODE_BATCH_WORKER_ENABLED` | `true` | Node acts as COB batch worker |
+| `fineract.mode.batch-manager-enabled` | `FINERACT_MODE_BATCH_MANAGER_ENABLED` | `true` | Node acts as COB batch manager |
+
+</Accordion>
+
+---
+
+## Key Design Principles
+
+<CardGroup cols={2}>
+  <Card title="Multi-Tenancy" icon="building">
+    A single JVM process serves multiple independent tenants. Every HTTP request carries `Fineract-Platform-TenantId` header. The `TenantAwareBasicAuthenticationFilter` reads this header, resolves tenant details from the `fineract_tenants` meta-database, and stores the `FineractPlatformTenant` in `ThreadLocalContextUtil`. The `RoutingDataSource` then routes every JDBC call to the per-tenant HikariCP pool.
+  </Card>
+  <Card title="CQRS Command Bus" icon="arrow-right-arrow-left">
+    Every state-changing operation flows through `PortfolioCommandSourceWritePlatformService.logCommandSource()` → `SynchronousCommandProcessingService.executeCommand()` → `CommandHandlerProvider` lookup → `NewCommandSourceHandler.processCommand()`. The command is persisted (audit trail) before execution.
+  </Card>
+  <Card title="Spring Batch COB" icon="calendar">
+    The Loan Close-of-Business job (`LOAN_COB`) runs nightly via Spring Batch. `CommonPartitioner` splits loans into ID-range partitions. Worker nodes execute `COBBusinessStep` implementations per loan. Partitioned execution can run on multiple JVM nodes via Spring Events (default), ActiveMQ, or Kafka.
+  </Card>
+  <Card title="Event-Driven" icon="bolt">
+    Domain events (e.g., `ClientCreated`, `LoanDisbursed`) are emitted as Avro-serialized messages to JMS or Kafka when `fineract.events.external.enabled=true`. Schema definitions live in `fineract-avro-schemas`.
+  </Card>
+</CardGroup>
+
+---
+
+## Gradle Submodule Inventory
+
+All modules are declared in `settings.gradle`. The root project is `fineract`.
+
+| Module | Directory | One-Line Purpose |
+|---|---|---|
+| `fineract-core` | `fineract-core/` | Foundation: tenant routing, ThreadLocal context, CQRS command primitives, JPA base entities, infrastructure services |
+| `fineract-security` | `fineract-security/` | Spring Security filter chains, Basic Auth, OAuth2/OIDC, 2FA, `TenantAwareBasicAuthenticationFilter` |
+| `fineract-cob` | `fineract-cob/` | Spring Batch Close-of-Business framework: `COBBusinessStep`, `CommonPartitioner`, batch job definitions |
+| `fineract-validation` | `fineract-validation/` | Bean Validation helpers and custom constraint implementations |
+| `fineract-command` | `fineract-command/` | New-style generic CQRS: `Command<T>`, `CommandDispatcher`, `CommandHandler<REQ,RES>`, `SynchronousCommandDispatcher` |
+| `fineract-command-test` | `fineract-command-test/` | Test utilities and stubs for the command module |
+| `fineract-command-jdbc` | `fineract-command-jdbc/` | JDBC-backed `CommandStore` persistence for the new command bus |
+| `fineract-command-audit` | `fineract-command-audit/` | Audit hook implementation for the new command bus |
+| `fineract-command-async` | `fineract-command-async/` | Asynchronous command dispatcher (WIP, disabled by default) |
+| `fineract-command-disruptor` | `fineract-command-disruptor/` | LMAX Disruptor-backed command dispatcher (WIP, disabled by default) |
+| `fineract-accounting` | `fineract-accounting/` | Double-entry general ledger, journal entries, chart of accounts |
+| `fineract-provider` | `fineract-provider/` | Assembly module: JAX-RS REST resources, Spring Boot app, Jersey config, all `*ApiResource` classes |
+| `fineract-branch` | `fineract-branch/` | Office/branch hierarchy management |
+| `fineract-document` | `fineract-document/` | Document upload and storage management |
+| `fineract-investor` | `fineract-investor/` | Loan investor / external asset owner tracking |
+| `fineract-rates` | `fineract-rates/` | Floating interest rate definitions |
+| `fineract-charge` | `fineract-charge/` | Fee and penalty charge type definitions |
+| `fineract-tax` | `fineract-tax/` | Tax group and tax component management |
+| `fineract-loan-origination` | `fineract-loan-origination/` | Loan origination workflow extensions |
+| `fineract-loan` | `fineract-loan/` | Core loan domain: products, accounts, transactions, schedules, repayment strategies |
+| `fineract-savings` | `fineract-savings/` | Savings accounts, fixed deposits, recurring deposits |
+| `fineract-report` | `fineract-report/` | Reporting infrastructure (Pentaho/Jasper report integration) |
+| `fineract-mix` | `fineract-mix/` | MIX Market data reporting integration |
+| `fineract-war` | `fineract-war/` | Thin module that produces the deployable WAR artifact |
+| `integration-tests` | `integration-tests/` | REST API integration test suite |
+| `twofactor-tests` | `twofactor-tests/` | 2FA-specific integration tests |
+| `oauth2-tests` | `oauth2-tests/` | OAuth2 flow integration tests |
+| `fineract-client` | `fineract-client/` | Generated Java API client (Retrofit2-based) |
+| `fineract-client-feign` | `fineract-client-feign/` | Generated OpenFeign API client |
+| `fineract-doc` | `fineract-doc/` | AsciiDoc source for the official documentation |
+| `fineract-avro-schemas` | `fineract-avro-schemas/` | Apache Avro schemas for external business events |
+| `fineract-e2e-tests-core` | `fineract-e2e-tests-core/` | Shared utilities for E2E / Cucumber tests |
+| `fineract-e2e-tests-runner` | `fineract-e2e-tests-runner/` | Cucumber E2E test runner |
+| `fineract-progressive-loan` | `fineract-progressive-loan/` | Advanced payment strategy ("progressive") loan type |
+| `fineract-progressive-loan-embeddable-schedule-generator` | `fineract-progressive-loan-embeddable-schedule-generator/` | Standalone schedule generator library for progressive loans |
+| `fineract-working-capital-loan` | `fineract-working-capital-loan/` | Working capital loan product type |
+| `custom:docker` | `custom/docker/` | Custom Docker image assembly for custom module builds |
+
+<Info>
+Custom modules follow the pattern `custom/<company>/<category>/<module>` and are dynamically discovered at build time via directory scan in `settings.gradle`. They are not included in the Apache source distribution.
+</Info>
+
+---
+
+## Verify a Running Instance
+
+```bash
+# Health check (no auth required)
+curl --insecure https://localhost:8443/fineract-provider/actuator/health
+# Expected: {"status":"UP","groups":["liveness","readiness"]}
+
+# Authenticated API call — default tenant, default credentials (mifos:password)
+curl --insecure \
+  https://localhost:8443/fineract-provider/api/v1/clients \
+  --header 'Fineract-Platform-TenantId: default' \
+  --header 'Authorization: Basic bWlmb3M6cGFzc3dvcmQ='
+# Expected: {"totalFilteredRecords":0,"pageItems":[]}
+```
+
+<Tip>
+The `Fineract-Platform-TenantId` header is **mandatory** for every authenticated API call. Omitting it returns a `401` with `InvalidTenantIdentifierException`. The default development tenant identifier is `default`, backed by the database `fineract_default`.
+</Tip>
